@@ -1,0 +1,28 @@
+[humandot]
+
+; sample file, everything the editor understands is used at least once
+; tags used
+;    #city - settlement
+;    #camp - a place to sleep
+;    @visited - been there
+
+[tag:#sample]
+
+20.4612, 44.8125
+   Beograd
+   #city
+   |population|1370000
+   https://www.openstreetmap.org/relation/1677007
+   ---
+   @visited
+
+19.8335, 45.2671
+   Novi Sad
+   #city
+   ===
+   @visited
+
+20.9114, 43.7181
+   Kopaonik
+   #camp
+   spot next to the trail, water 200m downhill

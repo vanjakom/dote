@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dote - humandot editor</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="css/dote.css">
+</head>
+<body>
+
+<div class="menubar" id="menubar">
+  <span class="menubar__brand">dote</span>
+
+  <div class="menu" data-menu>
+    <button class="menu__title" type="button">File</button>
+    <div class="menu__items">
+      <button type="button" data-action="file-new">New<span class="menu__hint">from template</span></button>
+      <button type="button" data-action="file-open">Open&hellip;<span class="menu__hint" data-shortcut="O"></span></button>
+      <hr>
+      <button type="button" data-action="file-save">Save<span class="menu__hint" data-shortcut="S"></span></button>
+      <button type="button" data-action="file-save-as">Save as&hellip;</button>
+    </div>
+  </div>
+
+  <div class="menu" data-menu>
+    <button class="menu__title" type="button">Edit</button>
+    <div class="menu__items">
+      <button type="button" data-action="edit-format">Format document<span class="menu__hint" data-shortcut="&#8679;F"></span></button>
+      <hr>
+      <button type="button" data-action="edit-add-here">Add dot at map center</button>
+      <button type="button" data-action="edit-add-click">Add dot by clicking the map</button>
+      <button type="button" data-action="edit-delete">Delete dot at cursor</button>
+    </div>
+  </div>
+
+  <div class="menu" data-menu>
+    <button class="menu__title" type="button">View</button>
+    <div class="menu__items">
+      <button type="button" data-action="view-fit">Fit map to all dots</button>
+      <button type="button" data-action="view-zoom">Zoom to dot at cursor<span class="menu__hint" data-shortcut="G"></span></button>
+      <hr>
+      <button type="button" data-action="view-toggle-editor">Hide the text pane</button>
+    </div>
+  </div>
+
+  <div class="menu" data-menu>
+    <button class="menu__title" type="button">Help</button>
+    <div class="menu__items">
+      <button type="button" data-action="help-format">The humandot format</button>
+      <button type="button" data-action="help-keys">Keyboard shortcuts</button>
+    </div>
+  </div>
+</div>
+
+<main class="workspace" id="workspace">
+  <div class="pane pane--map">
+    <div id="map"></div>
+  </div>
+
+  <div class="pane pane--editor" id="editor-pane">
+    <div class="editor">
+      <div class="gutter" id="gutter"><div class="gutter-inner"></div></div>
+      <div class="editor__text">
+        <pre class="highlight" id="highlight" aria-hidden="true"></pre>
+        <textarea id="text"
+                  spellcheck="false"
+                  autocomplete="off"
+                  autocapitalize="off"
+                  autocorrect="off"
+                  aria-label="humandot source"></textarea>
+      </div>
+    </div>
+  </div>
+</main>
+
+<div class="statusbar" id="statusbar">
+  <span class="status status--file" id="status-file">untitled.dot</span>
+  <span class="status" id="status-dots">0 dots</span>
+  <span class="status status--problems" id="status-problems"></span>
+  <span class="status status--message" id="status-message"></span>
+  <span class="status__spacer"></span>
+  <span class="status" id="status-dot"></span>
+  <span class="status" id="status-cursor">Ln 1, Col 1</span>
+  <span class="status status--coordinate" id="status-coordinate" title="longitude, latitude - click to copy"></span>
+</div>
+
+<dialog class="sheet" id="sheet">
+  <div class="sheet__head">
+    <h2 class="sheet__title" id="sheet-title"></h2>
+    <button class="sheet__close" type="button" data-action="sheet-close" aria-label="Close">&times;</button>
+  </div>
+  <div class="sheet__body" id="sheet-body"></div>
+</dialog>
+
+<input type="file" id="file-input" accept=".dot,text/plain" hidden>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
+<script src="js/humandot.js" defer></script>
+<script src="js/editor.js" defer></script>
+<script src="js/dotmap.js" defer></script>
+<script src="js/app.js" defer></script>
+</body>
+</html>
