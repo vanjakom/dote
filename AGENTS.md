@@ -75,9 +75,9 @@ a divergence is listed under Gotchas below.
 <blank line>               closes the dot
 ```
 
-Reader branch order is significant and is reproduced exactly in
-`js/humandot.js`: comment → `[humandot]` → `[statement]` → blank → indented
-tag → line containing a comma. Consequences worth remembering:
+Reader branch order is significant and is reproduced exactly in the humandot
+section: comment → `[humandot]` → `[statement]` → blank → indented tag →
+line containing a comma. Consequences worth remembering:
 
 - An **indented** `;` or `[x]` is a *tag*, not a comment or a directive.
 - Only the first two comma separated fields of a coordinate line are read.
@@ -90,8 +90,18 @@ tag → line containing a comma. Consequences worth remembering:
 
 No build step, no package manager, no dependencies to install.
 
-- Open `index.html` directly in a browser (`file://` works), or serve the
-  directory with any static server if you prefer (`python3 -m http.server`).
+**Deployed at <https://vanjakom.github.io/dote/>** (GitHub Pages, from the
+repository root on `main` — a push deploys). That is the way to run it: it is
+https, so it is a secure context with a real origin, which is what the File
+System Access API and `history.replaceState` both need. Everything works
+there that does not work from disk.
+
+The normal editing loop needs no server of your own: open the Pages url,
+**File ▸ Open**, pick the `.dot`, edit, ⌘S writes back to that same file.
+
+- Opening `index.html` from disk still works for reading, drafting and the
+  map, but cannot save in place — see Gotchas. `python3 -m http.server` in
+  the project directory is the local equivalent of the Pages deployment.
 - Leaflet 1.9.4 and OpenStreetMap tiles load from the network. Everything
   else is local.
 - Per global instructions the user runs and verifies the app; correctness is
@@ -99,17 +109,24 @@ No build step, no package manager, no dependencies to install.
 
 ## Architecture
 
+**The whole app is `index.html`.** One file, ~2300 lines, no build step, no
+`css/` or `js/` directory. Inside it, in order:
+
 ```
-index.html          structure only: menu bar, panes, status bar, help dialog
-css/dote.css        all styling, one light theme
-js/humandot.js      format: parse, classify, format, write. Pure, no DOM.
-js/editor.js        the text pane: a plain textarea plus line arithmetic
-js/dotmap.js        the map pane: a thin layer over Leaflet
-js/app.js           wiring: menus, shortcuts, file IO, status bar, sync
-samples/            example .dot files
+<style>       all styling, one light theme
+markup        menu bar, panes, status bar, help dialog
+humandot      the file format: parse, classify, format, write. Pure, no DOM.
+editor        the text pane: a plain textarea plus line arithmetic
+dotmap        the map pane: a thin layer over Leaflet
+app           wiring: menus, shortcuts, file IO, status bar, sync
 ```
 
-**The text is the document.** `js/app.js` never mutates a parsed dot. Every
+Each of those four is an IIFE hanging off `window.DOTE`, exactly as when they
+were separate files — the module boundaries survived the collapse, only the
+file boundaries went. Keep it that way: no cross-section reaching into
+another's internals.
+
+**The text is the document.** The app section never mutates a parsed dot. Every
 interaction that changes data — dragging a marker, adding a dot, formatting
 — is turned into an edit of the textarea; the text re-parses and the map
 re-renders from the result. The map is a view, never a second source of
@@ -123,7 +140,7 @@ textarea input -> debounce 120ms -> humandot.parse
                                  -> status bar
 ```
 
-`js/editor.js` renders nothing. Its job is line arithmetic — turning
+The editor section renders nothing. Its job is line arithmetic — turning
 character offsets into line indexes and back (`lineRange`, `lineAtOffset`,
 `cursor`) — so the map can address dots by the lines they occupy, plus edit
 operations that keep the native undo stack intact.
@@ -157,8 +174,8 @@ keep those fields accurate in any parser change.
 ?writable=true    Save posts the document back to that same url
 ```
 
-`?url=` wins over the restored `localStorage` session — an explicit link
-should never show stale local text. The url is used literally except for one
+Without `?url=` the document starts as `[humandot]\n\n` and nothing else.
+The url is used literally except for one
 rewrite: a `github.com/<owner>/<repo>/blob/<rest>` address becomes
 `raw.githubusercontent.com/<owner>/<repo>/<rest>`, because the blob address
 is the one you have in hand when browsing a repo but it serves html and no
@@ -197,20 +214,54 @@ so a dote link against it looks like
 file:///Users/vanja/projects/dote/index.html?url=http://localhost:7078/fs/view/raw/<path>
 ```
 
-As of 2026-09-18 that endpoint answers 200 with the file but sends **no
-`Access-Control-Allow-Origin`**, so the fetch fails — a `file://` page has
-origin `null` and the read is cross origin. Adding
-`Access-Control-Allow-Origin: *` to that service is the whole fix; for
-`?writable=true` it must also accept `POST` on the same path and set the
-header on that response. No preflight is involved, the body goes as
-`text/plain`.
+That service is `~/projects/uberjvm`, namespaces `uberjvm.desktop.server`
+and `uberjvm.desktop.fs`. Measured 2026-09-18 with `curl` sending the headers
+a browser would:
+
+| request | result |
+| --- | --- |
+| `GET` with `Origin:` | `200`, but **no `Access-Control-Allow-Origin`** |
+| `OPTIONS` preflight | **`500`** — there is no OPTIONS route at all |
+
+So dote cannot read from it, and can only report `Failed to fetch`: the
+browser withholds the reason from JavaScript and shows it only in the
+devtools console.
+
+**Decided 2026-09-19: leave it that way. Do not add CORS or a write
+endpoint to that server.** It was implemented (CORS middleware, a private
+network preflight, `POST /fs/view/raw/*`) and then reverted on reading the
+risk back, because `/fs/view/raw` serves *every file on the disk* and the
+write endpoint would have written to it. Even done carefully the exposure is
+uncomfortable:
+
+- `Access-Control-Allow-Origin: *` would let any page open in the browser
+  read the whole disk through loopback, so the origin has to be an allow
+  list — one more thing that must stay correct forever.
+- CORS does not stop a cross origin `POST` from landing; a `text/plain`
+  body is a "simple request", so a hostile page could write and simply not
+  read the reply. Blocking that needs an explicit `Origin` check on writes,
+  separate from the CORS headers.
+- `Origin: null` cannot be trusted, because a sandboxed iframe sends it too,
+  so `file://` dote could never be allowed anyway.
+
+**Use File ▸ Open instead.** From the Pages deployment it opens any `.dot`
+anywhere with a picker and ⌘S writes back in place — same outcome, no server
+listening, no allow list to maintain. `?url=` stays useful for read only
+links against hosts that are already public, such as
+raw.githubusercontent.com.
 
 Two non-problems, so nobody re-investigates them: `http://localhost` is
-exempt from mixed content blocking even though Chrome treats `file://` as a
-secure context, and the server's `application/octet-stream` content type is
-irrelevant to `fetch`/`response.text()` — it would only matter if dote's own
-css and js were served through that endpoint, since Chrome refuses a
-stylesheet with the wrong MIME type in standards mode.
+exempt from mixed content blocking (it is potentially trustworthy) whether
+the page is `file://` or https, and the server's `application/octet-stream`
+content type is irrelevant to `fetch`/`response.text()` — it would only
+matter if dote's own css and js were served through that endpoint, since
+Chrome refuses a stylesheet with the wrong MIME type in standards mode.
+
+Reaching that endpoint from the Pages deployment would additionally fall
+under Chrome's Private Network Access rules (public origin → loopback),
+which force a preflight the server would have to answer with
+`Access-Control-Allow-Private-Network: true` — another reason the route was
+dropped rather than supported.
 
 ### Map view in the url
 
@@ -226,15 +277,19 @@ else stays longitude first.
 
 ## Conventions
 
-- Plain ES5-style JavaScript in classic `<script defer>` tags, everything
-  hanging off a single `window.DOTE` namespace. `async`/`await` is used only
-  in the file IO section of `app.js`, where promise chains would be worse.
+- Plain ES5-style JavaScript in one inline `<script>`, everything hanging off
+  a single `window.DOTE` namespace. `async`/`await` is used only in the file
+  IO part of the app section, where promise chains would be worse.
 - No ES modules — `import` fails under `file://` (CORS), and opening
-  `index.html` straight from disk has to keep working.
-- No framework, no bundler, no CSS preprocessor. Keep it that way unless the
-  user asks otherwise.
-- `js/humandot.js` stays pure: no DOM, no Leaflet, no globals besides its
-  own export. It is the piece that could be reused elsewhere.
+  `index.html` straight from disk has to keep working. An inline script is
+  never deferred either, which is why Leaflet is loaded *before* the code,
+  without `defer`: an external script placed after an inline one runs too
+  late.
+- No framework, no bundler, no CSS preprocessor, no build step of any kind —
+  `index.html` is edited directly, it is not generated from anything. Keep it
+  that way unless the user asks otherwise.
+- The humandot section stays pure: no DOM, no Leaflet, no globals besides its
+  own export. It is the piece that could be lifted out and reused elsewhere.
 - Comments explain *why*, not *what*. The format quirks are worth commenting;
   obvious DOM code is not.
 - **Text is plain.** One colour (black), one weight, no slant, no underline,
@@ -275,7 +330,7 @@ else stays longitude first.
   specific error when coordinates look swapped.
 - **clj-geo drops a dot when two coordinate lines are not separated by a
   blank line** — the reader overwrites the location under construction
-  instead of pushing it. `js/humandot.js` deliberately diverges and closes
+  instead of pushing it. the humandot section deliberately diverges and closes
   the previous dot instead, so the editor never silently loses data.
   Well-formed files parse identically in both. `humandot.format` always
   inserts the blank line, so anything the editor writes is safe to read with
@@ -317,18 +372,21 @@ else stays longitude first.
   applies; when it is false the File menu items are relabelled
   "Save (downloads)" at boot and the flash says why, because a silent
   fallback just drops surprise copies in the downloads folder.
-- Consequence for the user: **open dote over http to edit files in place**
-  (`python3 -m http.server` in the project directory; localhost counts as a
-  secure context). Opening `index.html` from disk still works for reading,
-  drafting and the map, it just cannot write back.
-- A `FileSystemFileHandle` is not kept across reloads. It could be — handles
-  are structured-cloneable into IndexedDB and re-authorised with
-  `requestPermission` — but that is not implemented; after a reload the
-  session text comes back from `localStorage` while the handle does not, so
-  the first Save asks for a location again.
-- Session text is mirrored into `localStorage` under `dote.session` so a
-  reload doesn't lose work. It is a convenience only — the file on disk is
-  what counts.
+- Consequence for the user: **use the Pages deployment to edit files in
+  place** (or `python3 -m http.server` locally; localhost counts as a secure
+  context). Opening `index.html` from disk still works for reading, drafting
+  and the map, it just cannot write back.
+- **Nothing is persisted in the browser.** No `localStorage`, no IndexedDB,
+  no cookies. A reload starts from `[humandot]\n\n`, or from `?url=` if the
+  link says so. This is deliberate — a hidden second copy of a document that
+  is really a file on disk (and in git) is a way to lose work, not to save
+  it. The `beforeunload` guard is the only safety net, so keep it working.
+  A `dote.session` entry in `localStorage` existed until 2026-09-19 and was
+  removed; do not bring it back without being asked.
+- A `FileSystemFileHandle` is not kept across reloads either — handles are
+  structured-cloneable into IndexedDB and re-authorisable with
+  `requestPermission`, but that is not implemented, so the first Save after a
+  reload asks for a location again.
 - **`history.replaceState` throws under `file://`** (origin `null`), which is
   exactly how this app is meant to be opened. `writeHash` catches it once,
   sets `canReplaceState = false` and falls back to assigning
@@ -344,8 +402,17 @@ else stays longitude first.
   user is a Clojure developer, so cljs was the obvious alternative. Rejected
   because it needs shadow-cljs and a build step, and the user does not build
   or run in this workflow — a file that opens straight from disk is worth
-  more here. `js/humandot.js` is isolated enough to be swapped for a cljs
+  more here. the humandot section is isolated enough to be swapped for a cljs
   implementation later if that changes.
+- **One file, not a directory.** `css/` and `js/` were collapsed into
+  `index.html` on 2026-09-19. The reason is deployment: a multi file page
+  needs the server to get content types right, and Chrome refuses a
+  stylesheet served as `application/octet-stream` in standards mode, which is
+  what a plain file server hands back. One `.html` is the least a server has
+  to get right, and it makes dote openable from anywhere it can be dropped.
+  The cost is that the humandot section is no longer a file another page can
+  load on its own. Collapsing was chosen over a concatenation step because a
+  build step is exactly what this project does not have.
 - **Leaflet over MapLibre/OpenLayers.** Smallest dependency that does markers
   and drag well, and OSM raster tiles match how the format already refers to
   OSM.
