@@ -33,7 +33,9 @@
     fileHandle: null,
     savedText: '',
     selected: -1,
-    suppressPan: false
+    suppressPan: false,
+    sourceUrl: null,   // set when the document came from ?url=
+    writable: false    // ?writable=true, the source url takes it back on POST
   };
 
   var editor;
@@ -80,6 +82,7 @@
     state.fileHandle = fileHandle || null;
     state.savedText = text;
     state.selected = -1;
+    state.sourceUrl = null;   // whatever loads from a url sets this afterwards
     withoutPan(function () {
       editor.setValue(text);
       reparse();
@@ -99,7 +102,6 @@
 
   function reparse() {
     state.parsed = humandot.parse(editor.getValue());
-    editor.setProblems(state.parsed.problems);
     dotMap.setDots(state.parsed.dots);
     syncSelectionFromCursor();
     updateStatus();
@@ -119,7 +121,6 @@
     var moved = index !== state.selected;
 
     state.selected = index;
-    editor.setActiveLine(cursor.line);
     dotMap.setSelected(index);
     if (moved && index >= 0 && !state.suppressPan) dotMap.panToDot(index);
     updateStatus(cursor);
@@ -150,12 +151,44 @@
 
   /* ----------------------------------------------------------- dot editing */
 
+  /*
+   * Where a new dot goes: immediately above the first existing one, so the
+   * newest is always at the top of the file. Comments written directly above
+   * that first dot belong to it and are stepped over. Returns -1 when the
+   * file holds no dots yet and the block should simply go at the end, after
+   * the header.
+   */
+  function newDotLine() {
+    var lines = humandot.splitLines(editor.getValue());
+    var first = -1;
+    for (var i = 0; i < lines.length && first < 0; i++) {
+      if (humandot.classifyLine(lines[i]) === humandot.LINE.COORDINATE) first = i;
+    }
+    if (first < 0) return -1;
+    while (first > 0 && humandot.classifyLine(lines[first - 1]) === humandot.LINE.COMMENT) {
+      first -= 1;
+    }
+    return first;
+  }
+
   function addDot(longitude, latitude) {
+    var block = coordinateText(longitude, latitude) + '\n' + humandot.TAG_INDENT;
+    var line = newDotLine();
+
     withoutPan(function () {
-      editor.appendBlock(coordinateText(longitude, latitude) + '\n' + humandot.TAG_INDENT);
+      if (line < 0) {
+        editor.appendBlock(block);
+      } else {
+        var start = editor.lineRange(line).start;
+        // the blank line after the indent keeps this dot separate from the
+        // one that used to be first
+        editor.replaceRange(start, start, block + '\n\n');
+        editor.moveCursorTo(line + 1, humandot.TAG_INDENT.length);
+      }
       reparse();
     });
-    dotMap.revealDot(state.parsed.dots.length - 1);
+
+    dotMap.revealDot(0);
     flash('dot added - type a name');
   }
 
@@ -195,12 +228,92 @@
     flash('document formatted');
   }
 
+  /* ----------------------------------------------------------- parameters */
+
+  /*
+   *   ?url=<url>          fetch the document from there on start
+   *   ?writable=true      Save posts the document back to that same url
+   *
+   * The url is taken literally, with one rewrite: a github.com blob address
+   * is the one you have in hand when browsing a repository, but it serves
+   * html and sends no CORS header, so it is turned into its raw form. That
+   * pattern can never be a POST target, so the rewrite cannot collide with a
+   * writable endpoint.
+   */
+  var GITHUB_BLOB = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/(.+)$/;
+
+  function fetchableUrl(url) {
+    var match = GITHUB_BLOB.exec(url);
+    return match
+      ? 'https://raw.githubusercontent.com/' + match[1] + '/' + match[2] + '/' + match[3]
+      : url;
+  }
+
+  function fileNameFor(url) {
+    try {
+      var path = new URL(url, global.location.href).pathname;
+      return path.substring(path.lastIndexOf('/') + 1) || 'untitled.dot';
+    } catch (error) {
+      return 'untitled.dot';
+    }
+  }
+
+  function readParameters() {
+    var parameters = new URLSearchParams(global.location.search);
+    var url = parameters.get('url');
+    var writable = parameters.get('writable');
+    return {
+      url: url ? fetchableUrl(url.trim()) : null,
+      writable: writable === 'true' || writable === '1'
+    };
+  }
+
+  async function loadFromUrl(url, keepView) {
+    flash('loading ' + url);
+    try {
+      var response = await fetch(url, { headers: { Accept: 'text/plain' } });
+      if (!response.ok) throw new Error(response.status + ' ' + response.statusText);
+      var text = await response.text();
+      setDocument(text, fileNameFor(url), null, keepView);
+      state.sourceUrl = url;   // setDocument cleared it, this is where it came from
+      updateStatus();
+      flash('loaded ' + url);
+    } catch (error) {
+      // a failure here is almost always the endpoint not allowing the origin
+      flash('could not load ' + url + ': ' + error.message);
+    }
+  }
+
   /* ---------------------------------------------------------------- files */
 
   var FILE_TYPES = [{
     description: 'humandot file',
     accept: { 'text/plain': ['.dot'] }
   }];
+
+  /*
+   * Saving over the file you opened needs the File System Access API. It is
+   * missing in two situations and the difference matters to whoever is
+   * looking at the status bar:
+   *
+   *   - the page was opened from disk. A file:// page has an opaque origin
+   *     ("null"), and the pickers are gated on a secure context with a real
+   *     one, so Chrome does not expose them. Serving the directory fixes it,
+   *     localhost counts as secure.
+   *   - the browser has not implemented them (Firefox, Safari). Nothing to
+   *     be done there, every save is a download.
+   *
+   * Either way Save degrades to a download, which is fine as long as it says
+   * so instead of quietly dropping a second copy in ~/Downloads.
+   */
+  var canSaveInPlace = typeof global.showSaveFilePicker === 'function';
+  var servedFromDisk = global.location.protocol === 'file:';
+
+  function noPickerReason() {
+    return servedFromDisk
+      ? 'saving in place needs the page served, not opened from disk'
+      : 'this browser cannot save in place';
+  }
 
   async function openFile() {
     if (global.showOpenFilePicker) {
@@ -218,7 +331,32 @@
     elements.fileInput.click();
   }
 
+  /*
+   * writable=true is a promise by whoever wrote the link that the url which
+   * served the document also takes it back. The body goes as text/plain,
+   * which keeps this a CORS simple request - there is no preflight for the
+   * endpoint to answer, it only has to allow the origin on the response.
+   */
+  async function postToSource() {
+    try {
+      var response = await fetch(state.sourceUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: editor.getValue()
+      });
+      if (!response.ok) throw new Error(response.status + ' ' + response.statusText);
+      markSaved();
+      flash('saved to ' + state.sourceUrl);
+    } catch (error) {
+      flash('could not save to ' + state.sourceUrl + ': ' + error.message);
+    }
+  }
+
   async function saveFile() {
+    if (state.writable && state.sourceUrl) {
+      await postToSource();
+      return;
+    }
     if (!state.fileHandle) {
       await saveFileAs();
       return;
@@ -235,7 +373,7 @@
   }
 
   async function saveFileAs() {
-    if (global.showSaveFilePicker) {
+    if (canSaveInPlace) {
       try {
         var handle = await global.showSaveFilePicker({
           suggestedName: state.fileName,
@@ -252,7 +390,6 @@
     downloadFile();
   }
 
-  // browsers without the File System Access API only get a download
   function downloadFile() {
     var blob = new Blob([editor.getValue()], { type: 'text/plain;charset=utf-8' });
     var url = URL.createObjectURL(blob);
@@ -264,7 +401,9 @@
     document.body.removeChild(link);
     global.setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
     markSaved();
-    flash('downloaded ' + state.fileName);
+    flash(canSaveInPlace
+      ? 'downloaded ' + state.fileName
+      : 'downloaded ' + state.fileName + ' - ' + noPickerReason());
   }
 
   /* -------------------------------------------------------------- session */
@@ -359,19 +498,25 @@
 
     elements.file.textContent = state.fileName;
     elements.file.classList.toggle('is-modified', isModified());
+    elements.file.title = state.sourceUrl
+      ? state.sourceUrl + (state.writable ? ' (Save posts back here)' : ' (read only)')
+      : state.fileName;
 
     var dots = state.parsed.dots;
     var defaults = state.parsed.defaultTags.length;
     elements.dots.textContent = dots.length + (dots.length === 1 ? ' dot' : ' dots') +
       (defaults ? ' (+' + defaults + ' default tag' + (defaults === 1 ? '' : 's') + ')' : '');
 
-    var errors = state.parsed.problems.filter(function (p) { return p.severity === 'error'; }).length;
-    var warnings = state.parsed.problems.length - errors;
-    var problems = '';
-    if (errors) problems = errors + (errors === 1 ? ' error' : ' errors');
-    else if (warnings) problems = warnings + (warnings === 1 ? ' warning' : ' warnings');
-    elements.problems.textContent = problems;
-    elements.problems.classList.toggle('is-warning', !errors && !!warnings);
+    // without line numbers in the pane, the status bar is where a problem gets
+    // located - report the count and spell out the first one of that severity
+    var all = state.parsed.problems;
+    var errors = all.filter(function (p) { return p.severity === 'error'; });
+    var worst = errors.length ? errors : all;
+    var noun = errors.length ? 'error' : 'warning';
+    elements.problems.textContent = worst.length
+      ? worst.length + ' ' + noun + (worst.length === 1 ? '' : 's') +
+        ', line ' + (worst[0].line + 1) + ': ' + worst[0].message
+      : '';
 
     elements.cursor.textContent = 'Ln ' + (cursor.line + 1) + ', Col ' + (cursor.column + 1);
 
@@ -470,6 +615,7 @@
 
       case 'help-format': showSheet('The humandot format', FORMAT_HELP); break;
       case 'help-keys': showSheet('Keyboard shortcuts', keyboardHelp()); break;
+      case 'help-url': showSheet('Opening from a url', URL_HELP); break;
 
       case 'sheet-close': elements.sheet.close(); break;
     }
@@ -513,6 +659,34 @@
     '</table>'
   ].join('');
 
+  var URL_HELP = [
+    '<h3>Parameters</h3>',
+    '<table>',
+    '<tr><td>?url=&hellip;</td><td>fetch the document from there when dote starts, ',
+    'instead of restoring the last session</td></tr>',
+    '<tr><td>?writable=true</td><td>Save posts the document back to that same url</td></tr>',
+    '</table>',
+    '<h3>Example</h3>',
+    '<pre>index.html?url=https://raw.githubusercontent.com/you/dots/master/camps.dot</pre>',
+    '<h3>What the other end has to do</h3>',
+    '<table>',
+    '<tr><td>reading</td><td>answer the GET with the file and an ',
+    '<code>Access-Control-Allow-Origin</code> header. raw.githubusercontent.com ',
+    'already does; a github.com &hellip;/blob/&hellip; address is rewritten to its raw ',
+    'form for you</td></tr>',
+    '<tr><td>writing</td><td>accept a POST whose body is the whole file as ',
+    '<code>text/plain</code>, and allow the origin on the response. Sending it as ',
+    'text/plain keeps it a simple request, so there is no preflight to answer</td></tr>',
+    '</table>',
+    '<h3>Notes</h3>',
+    '<table>',
+    '<tr><td>the map view</td><td>the <code>#map=</code> hash still applies, so one link ',
+    'can carry both the file and where to look</td></tr>',
+    '<tr><td>without writable</td><td>the document is read only; Save falls back to ',
+    'writing a local copy</td></tr>',
+    '</table>'
+  ].join('');
+
   function keyboardHelp() {
     var modifier = isApple ? '⌘' : 'Ctrl+';
     var rows = [
@@ -520,11 +694,14 @@
       [modifier + 'S', 'save'],
       [modifier + '⇧F', 'format the document'],
       [modifier + 'G', 'zoom the map to the dot at the cursor'],
+      ['Enter', 'in a dot, start the next tag already indented'],
+      ['⇧Enter', 'a plain newline, no indent'],
       ['Tab', 'insert the tag indent'],
+      ['click a link', 'open it in a new tab'],
+      [(isApple ? '⌥' : 'Alt') + ' click a link', 'place the caret in it instead'],
       ['Esc', 'close a menu, cancel adding a dot'],
       ['click a marker', 'select that dot in the text'],
-      ['drag a marker', 'rewrite its coordinate line'],
-      ['click a line number', 'select that line']
+      ['drag a marker', 'rewrite its coordinate line']
     ];
     return '<table>' + rows.map(function (row) {
       return '<tr><td>' + row[0] + '</td><td>' + row[1] + '</td></tr>';
@@ -581,11 +758,7 @@
       sheetBody: byId('sheet-body')
     };
 
-    editor = new global.DOTE.Editor({
-      textarea: byId('text'),
-      highlight: byId('highlight'),
-      gutter: byId('gutter')
-    });
+    editor = new global.DOTE.Editor({ textarea: byId('text') });
 
     dotMap = new global.DOTE.DotMap(byId('map'));
 
@@ -597,6 +770,13 @@
 
     editor.onCursor = function () {
       syncSelectionFromCursor();
+    };
+
+    // the pattern only ever matches http and https, so there is no scheme to
+    // vet before handing the url to the browser
+    editor.onLink = function (url) {
+      global.open(url, '_blank', 'noopener,noreferrer');
+      flash('opened ' + url);
     };
 
     dotMap.onSelect = function (index) { selectDot(index); };
@@ -645,15 +825,33 @@
     setUpMenus();
     setUpShortcuts();
 
+    var parameters = readParameters();
+    state.writable = parameters.writable;
+
+    // say up front that Save cannot write back, rather than letting it look
+    // like it worked and leaving a copy in the downloads folder
+    if (!canSaveInPlace && !state.writable) {
+      document.querySelectorAll('[data-action="file-save"], [data-action="file-save-as"]')
+        .forEach(function (button) {
+          button.firstChild.nodeValue = button.firstChild.nodeValue.trim() + ' (downloads)';
+        });
+    }
+
     // a view in the url wins over fitting the map to the dots
     var view = readHash();
 
-    var session = restoreSession();
-    if (session) {
-      setDocument(session.text, session.fileName, null, !!view);
-      flash('restored your last session');
+    if (parameters.url) {
+      // an explicit url wins over whatever localStorage was holding
+      setDocument('', fileNameFor(parameters.url), null, true);
+      loadFromUrl(parameters.url, !!view);
     } else {
-      setDocument(TEMPLATE, 'untitled.dot', null, !!view);
+      var session = restoreSession();
+      if (session) {
+        setDocument(session.text, session.fileName, null, !!view);
+        flash('restored your last session');
+      } else {
+        setDocument(TEMPLATE, 'untitled.dot', null, !!view);
+      }
     }
 
     if (view) dotMap.setView(view);

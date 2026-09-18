@@ -2,10 +2,10 @@
  * dote.css - menu bar on top, map and text side by side, status bar at the
  * bottom. The text pane is exactly 80 characters wide; the map takes the rest.
  *
- * All text is black. Nothing in the interface carries meaning through the
- * colour of a glyph - the syntax layer distinguishes line and tag kinds with
- * weight, slant and underline only, and states are shown with background
- * tints. That is also why there is a single light theme: black text needs a
+ * The text is shown as plain text: one colour (black), one weight, no slant,
+ * no underline, no line numbers. Nothing in the interface carries meaning
+ * through the look of a glyph - states are shown with background tints
+ * instead. That is also why there is a single light theme: black text needs a
  * light ground, so no dark variant is defined.
  */
 
@@ -26,8 +26,8 @@
   --border: #d6d6d6;
   --border-strong: #b0b0b0;
 
-  --tint: rgba(0, 0, 0, 0.07);        /* hover, active line */
-  --tint-strong: rgba(0, 0, 0, 0.13); /* selection */
+  --tint: rgba(0, 0, 0, 0.07);        /* hover */
+  --tint-strong: rgba(0, 0, 0, 0.13); /* open menu, selection */
 
   /* markers are not text, they keep their colours */
   --dot-plain: #2563eb;
@@ -50,6 +50,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font: 13px/1.4 var(--ui);
+  font-weight: normal;
   overflow: hidden;
 }
 
@@ -71,7 +72,6 @@ body {
   align-items: center;
   padding: 0 12px 0 6px;
   font-family: var(--mono);
-  font-weight: 600;
   letter-spacing: 0.04em;
 }
 
@@ -154,7 +154,6 @@ body {
 .pane--editor {
   flex: 0 0 auto;
   border-left: 1px solid var(--border);
-  background: var(--bg);
 }
 
 .pane--editor.is-hidden { display: none; }
@@ -167,103 +166,28 @@ body {
 
 /* --------------------------------------------------------------- editor */
 
-.editor {
-  display: flex;
-  height: 100%;
-  font: var(--font-size) / var(--line-height) var(--mono);
-}
-
-.gutter {
-  flex: 0 0 auto;
-  overflow: hidden;
-  padding: var(--editor-padding) 0;
-  background: var(--bg-sunken);
-  border-right: 1px solid var(--border);
-  text-align: right;
-  user-select: none;
-}
-
-.gutter-inner { will-change: transform; }
-
-.ln {
-  padding: 0 6px 0 4px;
-  cursor: default;
-  white-space: pre;
-}
-
-.ln--active { background: var(--tint); }
-
-/* a line with a problem is marked by weight and a bar, never by colour */
-.ln--warning { font-weight: 600; }
-.ln--error { font-weight: 600; box-shadow: inset 2px 0 0 var(--text); }
-
-.editor__text {
-  position: relative;
-  flex: 0 0 auto;
-  /* exactly 80 characters of the monospace font, plus the padding */
+/*
+ * A bare textarea. Its own font declaration is what makes 1ch a character of
+ * the monospace face, so the 80 column width below measures what it says.
+ */
+#text {
+  display: block;
   width: calc(var(--editor-columns) * 1ch + var(--editor-padding) * 2);
   height: 100%;
-  overflow: hidden;
-}
-
-.highlight,
-#text {
   margin: 0;
   padding: var(--editor-padding);
   border: 0;
-  font: inherit;
+  background: var(--bg);
+  color: var(--text);
+  font: var(--font-size) / var(--line-height) var(--mono);
   white-space: pre;
   tab-size: 4;
-}
-
-.highlight {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: max-content;
-  min-width: 100%;
-  pointer-events: none;
-  will-change: transform;
-  color: var(--text);
-}
-
-#text {
-  position: relative;
-  width: 100%;
-  height: 100%;
   overflow: auto;
-  background: transparent;
-  color: transparent;
-  caret-color: var(--text);
   resize: none;
   outline: 0;
 }
 
 #text::selection { background: var(--tint-strong); }
-
-/*
- * Syntax layer. Every span is black; only weight, slant and underline vary,
- * so the text stays readable as plain text.
- */
-.highlight span { color: var(--text); }
-
-.t-comment { font-style: italic; }
-.t-magic,
-.t-directive { font-weight: 700; }
-.t-number { font-variant-numeric: tabular-nums; }
-.t-punctuation { }
-.t-public { font-weight: 700; }
-.t-personal { font-weight: 700; font-style: italic; }
-.t-key { font-weight: 600; }
-.t-value { }
-.t-link { text-decoration: underline; text-underline-offset: 2px; }
-.t-separator { letter-spacing: 0.1em; }
-.t-note { }
-.t-unknown,
-.t-error {
-  text-decoration: underline wavy var(--text);
-  text-underline-offset: 3px;
-}
 
 /* --------------------------------------------------------------- markers */
 
@@ -290,7 +214,6 @@ body {
 
 .map-control__button {
   font-size: 18px;
-  font-weight: 600;
   line-height: 26px;
 }
 
@@ -321,12 +244,10 @@ body {
   user-select: none;
 }
 
+.status { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .status__spacer { flex: 1 1 auto; }
-.status--file { font-weight: 700; }
 .status--file.is-modified::after { content: " *"; }
 .status--problems:empty { display: none; }
-.status--problems { font-weight: 700; }
-.status--message { font-style: italic; }
 .status--coordinate { cursor: copy; }
 
 /* ---------------------------------------------------------------- sheet */
@@ -351,7 +272,11 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
-.sheet__title { margin: 0; font-size: 14px; }
+.sheet__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: normal;
+}
 
 .sheet__close {
   border: 0;
@@ -373,6 +298,7 @@ body {
 .sheet__body h3 {
   margin: 18px 0 6px;
   font-size: 12px;
+  font-weight: normal;
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
@@ -390,12 +316,16 @@ body {
   overflow-x: auto;
 }
 
+.sheet__body code {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
 .sheet__body table { width: 100%; border-collapse: collapse; }
 .sheet__body td { padding: 3px 0; vertical-align: top; }
 .sheet__body td:first-child {
   width: 190px;
   padding-right: 16px;
   font-family: var(--mono);
-  font-weight: 600;
   white-space: nowrap;
 }

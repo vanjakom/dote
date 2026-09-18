@@ -1,111 +1,57 @@
 /*
- * editor.js - the text pane: a textarea with a syntax highlight layer behind
- * it and a line number gutter beside it.
+ * editor.js - the text pane.
  *
- * The textarea keeps its own text transparent and its caret visible; the <pre>
- * underneath paints the same text with colour. Both use the same font metrics
- * and `white-space: pre`, so they stay aligned as long as nothing wraps. That
- * is why the editor never wraps and scrolls horizontally instead - a wrapped
- * line would take two rows in the textarea but one number in the gutter.
+ * A plain textarea. No syntax layer, no line numbers: the document is shown
+ * as the characters it contains and nothing else. What this module adds is
+ * line arithmetic - turning character offsets into line indexes and back -
+ * because the map needs to address dots by the lines they occupy.
+ *
+ * Links are the one exception to "nothing but text". A textarea cannot hold
+ * an anchor, so the character under the mouse is computed from the font
+ * metrics instead: the face is monospaced and nothing wraps, so a point maps
+ * to a line and a column by division. A url there turns the mouse pointer
+ * into a hand and a click opens it; the text itself is left looking like
+ * every other line.
+ *
+ * All programmatic edits go through replaceRange so the browser's own undo
+ * stack keeps working.
  */
 (function (global) {
   'use strict';
 
   var humandot = global.DOTE.humandot;
-  var LINE = humandot.LINE;
-  var TAG = humandot.TAG;
 
-  function escapeHtml(text) {
-    return text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
+  // a click with any modifier held is an ordinary click, not a link click
+  function hasModifier(event) {
+    return event.altKey || event.metaKey || event.ctrlKey || event.shiftKey;
   }
 
-  function span(className, text) {
-    return '<span class="' + className + '">' + escapeHtml(text) + '</span>';
-  }
-
-  /* ------------------------------------------------------------ highlight */
-
-  function highlightCoordinate(line) {
-    var comma = line.indexOf(',');
-    var longitude = line.substring(0, comma);
-    var rest = line.substring(comma + 1);
-    var secondComma = rest.indexOf(',');
-    var latitude = secondComma < 0 ? rest : rest.substring(0, secondComma);
-    var trailing = secondComma < 0 ? '' : rest.substring(secondComma);
-
-    var coordinate = humandot.parseCoordinate(line);
-    var longitudeClass = coordinate.longitude == null ? 't-error' : 't-number';
-    var latitudeClass = coordinate.latitude == null ? 't-error' : 't-number';
-
-    return span(longitudeClass, longitude) +
-      span('t-punctuation', ',') +
-      span(latitudeClass, latitude) +
-      (trailing ? span('t-error', trailing) : '');
-  }
-
-  function highlightTag(line) {
-    var indent = line.match(/^[ \t]*/)[0];
-    var tag = line.substring(indent.length).replace(/\s+$/, '');
-    var trailing = line.substring(indent.length + tag.length);
-    var body;
-
-    switch (humandot.classifyTag(tag)) {
-      case TAG.SEPARATOR:
-        body = span('t-separator', tag);
-        break;
-      case TAG.PUBLIC:
-        body = span('t-public', tag);
-        break;
-      case TAG.PERSONAL:
-        body = span('t-personal', tag);
-        break;
-      case TAG.LINK:
-        body = span('t-link', tag);
-        break;
-      case TAG.PAIR:
-        var pair = humandot.parsePair(tag);
-        body = pair
-          ? span('t-punctuation', '|') + span('t-key', pair.key) +
-            span('t-punctuation', '|') + span('t-value', pair.value)
-          : span('t-error', tag);
-        break;
-      default:
-        body = span('t-note', tag);
-        break;
+  /*
+   * Visual column -> character index. They differ only when the line contains
+   * tabs, which advance to the next tab stop rather than by one column.
+   */
+  function characterAtColumn(line, column, tabSize) {
+    var visual = 0;
+    for (var i = 0; i < line.length; i++) {
+      var width = line.charAt(i) === '\t' ? tabSize - (visual % tabSize) : 1;
+      if (column < visual + width) return i;
+      visual += width;
     }
-    return escapeHtml(indent) + body + escapeHtml(trailing);
+    return line.length;
   }
-
-  function highlightLine(line) {
-    switch (humandot.classifyLine(line)) {
-      case LINE.COMMENT: return span('t-comment', line);
-      case LINE.MAGIC: return span('t-magic', line);
-      case LINE.STATEMENT: return span('t-directive', line);
-      case LINE.BLANK: return escapeHtml(line);
-      case LINE.TAG: return highlightTag(line);
-      case LINE.COORDINATE: return highlightCoordinate(line);
-      default: return span('t-unknown', line);
-    }
-  }
-
-  /* --------------------------------------------------------------- editor */
 
   function Editor(elements) {
     this.textarea = elements.textarea;
-    this.highlight = elements.highlight;
-    this.gutter = elements.gutter;
-    this.gutterInner = elements.gutter.querySelector('.gutter-inner');
 
     this.onChange = null;   // function(text)
-    this.onCursor = null;   // function({line, column})
+    this.onCursor = null;   // function({line, column, offset})
+    this.onLink = null;     // function(url)
 
     this._lineStarts = null;
-    this._gutterSignature = null;
-    this._problemLines = {};
-    this._activeLine = -1;
+    this._cachedLineHeight = null;
+    this._cachedCharWidth = null;
+    this._cursorStyle = '';
+    this._pendingLink = null;
 
     this._bind();
   }
@@ -115,13 +61,8 @@
 
     this.textarea.addEventListener('input', function () {
       self._lineStarts = null;
-      self.render();
       if (self.onChange) self.onChange(self.textarea.value);
       self._emitCursor();
-    });
-
-    this.textarea.addEventListener('scroll', function () {
-      self._syncScroll();
     });
 
     ['keyup', 'click', 'focus', 'select'].forEach(function (name) {
@@ -132,21 +73,145 @@
       if (document.activeElement === self.textarea) self._emitCursor();
     });
 
-    // clicking a line number selects that whole line
-    this.gutter.addEventListener('click', function (event) {
-      var target = event.target.closest('.ln');
-      if (!target) return;
-      var line = Number(target.getAttribute('data-line'));
-      self.selectLines(line, line);
-      self.textarea.focus();
+    this.textarea.addEventListener('keydown', function (event) {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      // Tab inserts the tag indent instead of leaving the editor
+      if (event.key === 'Tab') {
+        event.preventDefault();
+        self.insertAtCursor(humandot.TAG_INDENT);
+        return;
+      }
+      // shift+enter stays a plain newline, the way out of the indenting
+      if (event.key === 'Enter' && !event.shiftKey) self._handleEnter(event);
     });
 
-    // Tab inserts the canonical tag indent instead of leaving the editor
-    this.textarea.addEventListener('keydown', function (event) {
-      if (event.key !== 'Tab' || event.metaKey || event.ctrlKey || event.altKey) return;
+    this._bindLinks();
+  };
+
+  /*
+   * Enter inside a dot opens the next tag already indented, so tags are typed
+   * one after another without touching the space bar.
+   *
+   * It stays out of the way wherever indenting would corrupt the line: with
+   * the caret part way along a coordinate (the tail would become a tag) or
+   * inside a tag's leading whitespace (the tail would be indented twice).
+   * On a line holding nothing but the indent it clears it instead, so the
+   * blank line that closes the dot is really blank.
+   */
+  Editor.prototype._handleEnter = function (event) {
+    var textarea = this.textarea;
+    if (textarea.selectionStart !== textarea.selectionEnd) return;
+
+    var cursor = this.cursor();
+    var text = this.lineText(cursor.line);
+    if (text === null) return;
+
+    var kind = humandot.classifyLine(text);
+
+    if (kind === humandot.LINE.BLANK) {
+      if (text.length === 0) return;
       event.preventDefault();
-      self.insertAtCursor(humandot.TAG_INDENT);
+      var range = this.lineRange(cursor.line);
+      this.replaceRange(range.start, range.end, '\n');
+      return;
+    }
+
+    if (kind === humandot.LINE.COORDINATE) {
+      if (cursor.column < text.length) return;
+    } else if (kind === humandot.LINE.TAG) {
+      if (cursor.column < text.match(/^[ \t]*/)[0].length) return;
+    } else {
+      return;
+    }
+
+    event.preventDefault();
+    this.insertAtCursor('\n' + humandot.TAG_INDENT);
+  };
+
+  /* ------------------------------------------------------------------ links */
+
+  Editor.prototype._bindLinks = function () {
+    var self = this;
+
+    this.textarea.addEventListener('mousemove', function (event) {
+      var over = !hasModifier(event) && self.linkAtPoint(event.clientX, event.clientY);
+      self._setCursorStyle(over ? 'pointer' : '');
     });
+
+    this.textarea.addEventListener('mouseleave', function () {
+      self._setCursorStyle('');
+    });
+
+    /*
+     * The caret must not move to where the link is, so the default is
+     * prevented on the way down and the link is opened on the way up - and
+     * only if the mouse is still on the same url, which lets a drag that
+     * started on a link fall through as an ordinary drag.
+     */
+    this.textarea.addEventListener('mousedown', function (event) {
+      self._pendingLink = null;
+      if (event.button !== 0 || hasModifier(event)) return;
+      var link = self.linkAtPoint(event.clientX, event.clientY);
+      if (!link) return;
+      event.preventDefault();
+      self._pendingLink = link.url;
+    });
+
+    this.textarea.addEventListener('mouseup', function (event) {
+      var url = self._pendingLink;
+      self._pendingLink = null;
+      if (!url) return;
+      var link = self.linkAtPoint(event.clientX, event.clientY);
+      if (link && link.url === url && self.onLink) self.onLink(url);
+    });
+  };
+
+  Editor.prototype._setCursorStyle = function (style) {
+    if (style === this._cursorStyle) return;
+    this._cursorStyle = style;
+    this.textarea.style.cursor = style;
+  };
+
+  // the line and column under a viewport point, null when past the text
+  Editor.prototype.positionAt = function (clientX, clientY) {
+    var textarea = this.textarea;
+    var rect = textarea.getBoundingClientRect();
+    var style = global.getComputedStyle(textarea);
+    var left = parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft);
+    var top = parseFloat(style.borderTopWidth) + parseFloat(style.paddingTop);
+
+    var x = clientX - rect.left - left + textarea.scrollLeft;
+    var y = clientY - rect.top - top + textarea.scrollTop;
+    if (x < 0 || y < 0) return null;
+
+    var line = Math.floor(y / this._lineHeight());
+    var text = this.lineText(line);
+    if (text === null) return null;
+
+    var tabSize = parseInt(style.tabSize, 10) || 8;
+    var column = characterAtColumn(text, Math.floor(x / this._charWidth()), tabSize);
+    return { line: line, column: column, text: text };
+  };
+
+  Editor.prototype.linkAtPoint = function (clientX, clientY) {
+    var position = this.positionAt(clientX, clientY);
+    return position ? humandot.linkAt(position.text, position.column) : null;
+  };
+
+  // one character of the monospace face, measured off screen once
+  Editor.prototype._charWidth = function () {
+    if (!this._cachedCharWidth) {
+      var style = global.getComputedStyle(this.textarea);
+      try {
+        var context = document.createElement('canvas').getContext('2d');
+        context.font = style.fontSize + ' ' + style.fontFamily;
+        // measure a run so the per character rounding averages out
+        this._cachedCharWidth = context.measureText(new Array(101).join('0')).width / 100;
+      } catch (error) {
+        this._cachedCharWidth = parseFloat(style.fontSize) * 0.6;
+      }
+    }
+    return this._cachedCharWidth;
   };
 
   /* ---------------------------------------------------------- text access */
@@ -158,7 +223,6 @@
   Editor.prototype.setValue = function (text) {
     this.textarea.value = text;
     this._lineStarts = null;
-    this.render();
     if (this.onChange) this.onChange(text);
     this._emitCursor();
   };
@@ -181,11 +245,18 @@
   // character range of a line, newline excluded
   Editor.prototype.lineRange = function (line) {
     var starts = this.lineStarts();
-    var text = this.textarea.value;
     if (line < 0 || line >= starts.length) return null;
-    var start = starts[line];
-    var end = line + 1 < starts.length ? starts[line + 1] - 1 : text.length;
-    return { start: start, end: end };
+    var text = this.textarea.value;
+    return {
+      start: starts[line],
+      end: line + 1 < starts.length ? starts[line + 1] - 1 : text.length
+    };
+  };
+
+  // text of a line without its newline, null when the line does not exist
+  Editor.prototype.lineText = function (line) {
+    var range = this.lineRange(line);
+    return range ? this.textarea.value.slice(range.start, range.end) : null;
   };
 
   Editor.prototype.lineAtOffset = function (offset) {
@@ -208,9 +279,9 @@
   /* -------------------------------------------------------------- editing */
 
   /*
-   * All programmatic edits go through here so that the browser's native undo
-   * stack keeps working - execCommand is deprecated but it is still the only
-   * way to edit a textarea undoably.
+   * execCommand is deprecated but it is still the only way to edit a textarea
+   * undoably. The fallback assigns the value directly and dispatches the
+   * input event the assignment does not fire.
    */
   Editor.prototype.replaceRange = function (start, end, text) {
     var textarea = this.textarea;
@@ -246,8 +317,7 @@
     var first = this.lineRange(from);
     var last = this.lineRange(to);
     if (!first || !last) return;
-    var text = this.textarea.value;
-    var end = Math.min(last.end + 1, text.length);
+    var end = Math.min(last.end + 1, this.textarea.value.length);
     this.replaceRange(first.start, end, '');
   };
 
@@ -290,68 +360,18 @@
     } else if (top > viewTop + viewHeight - lineHeight * 2) {
       this.textarea.scrollTop = top - viewHeight + lineHeight * 3;
     }
-    this._syncScroll();
   };
 
   Editor.prototype._lineHeight = function () {
     if (!this._cachedLineHeight) {
-      var computed = global.getComputedStyle(this.textarea).lineHeight;
-      this._cachedLineHeight = parseFloat(computed) || 18;
+      this._cachedLineHeight =
+        parseFloat(global.getComputedStyle(this.textarea).lineHeight) || 18;
     }
     return this._cachedLineHeight;
   };
 
   Editor.prototype._emitCursor = function () {
     if (this.onCursor) this.onCursor(this.cursor());
-  };
-
-  /* ------------------------------------------------------------ rendering */
-
-  Editor.prototype.setProblems = function (problems) {
-    var byLine = {};
-    (problems || []).forEach(function (problem) {
-      // an error on a line wins over a warning
-      if (byLine[problem.line] !== 'error') byLine[problem.line] = problem.severity;
-    });
-    this._problemLines = byLine;
-    this._renderGutter();
-  };
-
-  Editor.prototype.setActiveLine = function (line) {
-    if (line === this._activeLine) return;
-    this._activeLine = line;
-    this._renderGutter();
-  };
-
-  Editor.prototype.render = function () {
-    var lines = humandot.splitLines(this.textarea.value);
-    this.highlight.innerHTML = lines.map(highlightLine).join('\n') + '\n';
-    this._renderGutter();
-    this._syncScroll();
-  };
-
-  Editor.prototype._renderGutter = function () {
-    var count = this.lineCount();
-    var signature = count + '|' + this._activeLine + '|' + JSON.stringify(this._problemLines);
-    if (signature === this._gutterSignature) return;
-    this._gutterSignature = signature;
-
-    var html = '';
-    for (var i = 0; i < count; i++) {
-      var className = 'ln';
-      if (this._problemLines[i]) className += ' ln--' + this._problemLines[i];
-      if (i === this._activeLine) className += ' ln--active';
-      html += '<div class="' + className + '" data-line="' + i + '">' + (i + 1) + '</div>';
-    }
-    this.gutterInner.innerHTML = html;
-    this.gutter.style.width = (String(count).length + 2) + 'ch';
-    this._syncScroll();
-  };
-
-  Editor.prototype._syncScroll = function () {
-    this.highlight.style.transform =
-      'translate(' + -this.textarea.scrollLeft + 'px,' + -this.textarea.scrollTop + 'px)';
-    this.gutterInner.style.transform = 'translateY(' + -this.textarea.scrollTop + 'px)';
   };
 
   global.DOTE.Editor = Editor;

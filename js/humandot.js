@@ -236,6 +236,27 @@
     return TAG.NOTE;
   }
 
+  /*
+   * Links inside a line. A tag is often nothing but a URL, but one can also
+   * sit in the middle of a note or a comment, so the whole line is scanned.
+   * Trailing sentence punctuation is left out of the match.
+   */
+  var LINK_PATTERN = /https?:\/\/[^\s]+/g;
+
+  function linkAt(line, column) {
+    LINK_PATTERN.lastIndex = 0;
+    var match;
+    while ((match = LINK_PATTERN.exec(line)) !== null) {
+      var url = match[0].replace(/[.,;:!?]+$/, '');
+      var start = match.index;
+      var end = start + url.length;
+      if (column >= start && column < end) {
+        return { url: url, start: start, end: end };
+      }
+    }
+    return null;
+  }
+
   // "|key|value" -> {key: "key", value: "value"}, null when not a pair
   function parsePair(tag) {
     var t = tag.trim();
@@ -360,6 +381,7 @@
     splitLines: splitLines,
     classifyLine: classifyLine,
     classifyTag: classifyTag,
+    linkAt: linkAt,
     parsePair: parsePair,
     parseCoordinate: parseCoordinate,
     formatNumber: formatNumber,

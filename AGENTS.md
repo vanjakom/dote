@@ -101,9 +101,9 @@ No build step, no package manager, no dependencies to install.
 
 ```
 index.html          structure only: menu bar, panes, status bar, help dialog
-css/dote.css        all styling, light and dark via prefers-color-scheme
+css/dote.css        all styling, one light theme
 js/humandot.js      format: parse, classify, format, write. Pure, no DOM.
-js/editor.js        the text pane: textarea + highlight layer + gutter
+js/editor.js        the text pane: a plain textarea plus line arithmetic
 js/dotmap.js        the map pane: a thin layer over Leaflet
 js/app.js           wiring: menus, shortcuts, file IO, status bar, sync
 samples/            example .dot files
@@ -118,16 +118,25 @@ truth.
 Data flow per keystroke:
 
 ```
-textarea input -> Editor.render (highlight + gutter)
-               -> debounce 120ms -> humandot.parse
+textarea input -> debounce 120ms -> humandot.parse
                                  -> DotMap.setDots
-                                 -> Editor.setProblems
                                  -> status bar
 ```
+
+`js/editor.js` renders nothing. Its job is line arithmetic — turning
+character offsets into line indexes and back (`lineRange`, `lineAtOffset`,
+`cursor`) — so the map can address dots by the lines they occupy, plus edit
+operations that keep the native undo stack intact.
 
 Selection is synced in both directions: the cursor line determines the
 selected dot (`humandot.dotIndexAtLine`), and clicking a marker selects that
 dot's lines in the textarea.
+
+**New dots go on top.** `addDot` inserts above the first existing dot, never
+at the end, so the newest is always the first thing in the file
+(`newDotLine`). Comments written directly above that first dot belong to it
+and are stepped over. An empty file is the one exception — with no dots to
+go above, the block lands at the end, after the header.
 
 Moving the text cursor into a *different* dot pans the map to center on it
 and never changes the zoom (`DotMap.panToDot` without a zoom argument). Only
@@ -140,6 +149,68 @@ zoom, on purpose.
 Each parsed dot carries `line`, `endLine` and `tagLines` (0-based line
 indexes into the document). That is what makes map ↔ text linkage possible;
 keep those fields accurate in any parser change.
+
+### Loading and saving over http
+
+```
+?url=<url>        fetch the document from there at boot
+?writable=true    Save posts the document back to that same url
+```
+
+`?url=` wins over the restored `localStorage` session — an explicit link
+should never show stale local text. The url is used literally except for one
+rewrite: a `github.com/<owner>/<repo>/blob/<rest>` address becomes
+`raw.githubusercontent.com/<owner>/<repo>/<rest>`, because the blob address
+is the one you have in hand when browsing a repo but it serves html and no
+CORS header. That pattern can never be a POST target, so the rewrite cannot
+collide with a writable endpoint.
+
+The POST body is the whole file as `text/plain`, chosen so the request stays
+a CORS *simple request* — no preflight for the endpoint to answer, it only
+has to allow the origin on the response. `state.sourceUrl` holds the url a
+document came from and is cleared by `setDocument`, so opening a local file
+or starting a new one silently stops the POST behaviour.
+
+Verified CORS positions (checked with `curl -I`):
+
+| endpoint | `Access-Control-Allow-Origin` | use |
+| --- | --- | --- |
+| `raw.githubusercontent.com` | `*` | reading works |
+| `github.com/.../blob/...` | absent, and serves html | rewritten to raw |
+| `api.github.com` | `*` | would be needed to write to GitHub |
+
+Writing back to GitHub itself is **not** implemented: it needs the contents
+API, the file's blob SHA and an authenticated `PUT`, which means storing a
+token. `?writable=true` is for your own endpoint, not for GitHub.
+
+#### The local file server on port 7078
+
+Vanja runs a Jetty service that serves any path on disk:
+
+```
+http://localhost:7078/fs/view/raw/Users/vanja/projects/dote/samples/belgrade.dot
+```
+
+so a dote link against it looks like
+
+```
+file:///Users/vanja/projects/dote/index.html?url=http://localhost:7078/fs/view/raw/<path>
+```
+
+As of 2026-09-18 that endpoint answers 200 with the file but sends **no
+`Access-Control-Allow-Origin`**, so the fetch fails — a `file://` page has
+origin `null` and the read is cross origin. Adding
+`Access-Control-Allow-Origin: *` to that service is the whole fix; for
+`?writable=true` it must also accept `POST` on the same path and set the
+header on that response. No preflight is involved, the body goes as
+`text/plain`.
+
+Two non-problems, so nobody re-investigates them: `http://localhost` is
+exempt from mixed content blocking even though Chrome treats `file://` as a
+secure context, and the server's `application/octet-stream` content type is
+irrelevant to `fetch`/`response.text()` — it would only matter if dote's own
+css and js were served through that endpoint, since Chrome refuses a
+stylesheet with the wrong MIME type in standards mode.
 
 ### Map view in the url
 
@@ -166,12 +237,29 @@ else stays longitude first.
   own export. It is the piece that could be reused elsewhere.
 - Comments explain *why*, not *what*. The format quirks are worth commenting;
   obvious DOM code is not.
-- **All text is black.** No glyph in the interface carries meaning through
-  its colour. The syntax layer separates line and tag kinds with weight,
-  slant and underline only (comments italic, labels and directives bold,
-  links and malformed text underlined); states use background tints. Do not
-  reintroduce coloured text — if something needs to stand out, reach for
-  weight, a rule, or a tint behind it.
+- **Text is plain.** One colour (black), one weight, no slant, no underline,
+  no syntax highlighting, no line numbers. Nothing in the interface carries
+  meaning through the look of a glyph; states use background tints instead.
+  If something needs to stand out, reach for a tint or a rule, never for
+  colour, weight or decoration. This applies to the chrome too — the menu,
+  the status bar and the help sheet are all one weight.
+- Because the text pane is undecorated there is **no highlight layer and no
+  gutter**. Both existed and were deleted; do not reintroduce them without
+  being asked. Diagnostics live in the status bar, which names the line of
+  the first problem since the pane no longer can.
+- Links are the only interactive text, and they look like everything else —
+  a url is announced by the mouse pointer turning into a hand, never by
+  colour or an underline.
+- **Enter inside a dot opens the next tag already indented** with the
+  canonical three spaces (`Editor._handleEnter`), so a dot is typed without
+  touching the space bar. It always inserts `humandot.TAG_INDENT`, never a
+  copy of the current line's whitespace, which is how a file written with
+  tabs gets pulled back to the canonical indent as it is edited. It stays out
+  of the way where indenting would corrupt the line: the caret part way along
+  a coordinate line (the tail would become a tag) or inside a tag's leading
+  whitespace (the tail would be indented twice). On a line holding nothing
+  but the indent it clears the line instead, so the blank line that closes
+  the dot is really blank. Shift+Enter is the plain newline.
 - Because black text needs a light ground there is **one light theme and no
   dark variant**. There is no `prefers-color-scheme` block to keep in sync.
 - Map markers are not text and keep their colours (blue plain, green public,
@@ -195,13 +283,24 @@ else stays longitude first.
 - **clj-geo `write` emits two blank lines between dots** (`write-line` on a
   string that already ends in `\n`, then `write-new-line`). Our formatter
   emits one. Both parse the same; don't "fix" one to match the other.
-- **The editor does not wrap.** The highlight layer and the gutter only stay
-  aligned with the textarea while every logical line occupies exactly one
-  visual row. Long lines scroll horizontally. Changing this means rewriting
-  the gutter to measure wrapped rows.
-- The 80 column width is `calc(80 * 1ch + padding)` and depends on the pane
-  actually using the monospace font — `ch` is measured from the element's own
-  font. Don't move the font declaration off `.editor`.
+- **The editor does not wrap** (`white-space: pre`); long lines scroll
+  horizontally. This used to be forced by the highlight layer and gutter
+  needing one visual row per logical line. Both are gone, so wrapping is now
+  merely a choice — it would not break anything except `scrollLineIntoView`,
+  which assumes `line * lineHeight`.
+- **Clickable links are hit-tested by arithmetic, not by the DOM.** A
+  textarea cannot contain an anchor, so `Editor.positionAt` divides the mouse
+  offset by the line height and by one character's width (measured once with
+  a canvas) to find the line and column under the pointer. This is only
+  correct because the face is monospaced and nothing wraps — it is the second
+  thing, after `scrollLineIntoView`, that a switch to wrapping would break.
+  Tabs are accounted for (`characterAtColumn`); double width glyphs are not.
+  A plain click opens the url and the caret is deliberately not moved
+  (`preventDefault` on mousedown); any modifier makes it an ordinary click so
+  a url can still be edited.
+- The 80 column width is `calc(80 * 1ch + padding)` on `#text` itself, and
+  `ch` is measured from the element's own font — so the monospace font
+  declaration has to stay on `#text`, not on an ancestor.
 - Programmatic edits go through `Editor.replaceRange`, which uses
   `document.execCommand('insertText')`. It is deprecated but it is the only
   way to edit a textarea while keeping the browser's native undo stack. There
@@ -209,8 +308,24 @@ else stays longitude first.
 - `marker._icon` is touched directly in `dotmap.js` to toggle the selected
   class. Private Leaflet API, stable in practice, but it is why markers must
   be added to the map before selection is painted.
-- Saving in place uses the File System Access API (`showSaveFilePicker`),
-  which is Chromium only. Other browsers fall back to a download.
+- **Saving in place needs the page to be served.** It uses the File System
+  Access API, and the pickers are gated on a secure context with a real
+  origin. A `file://` page has an opaque origin (`null`), so Chrome does not
+  expose `showSaveFilePicker` there at all and Save degrades to a download —
+  the same root cause as the `replaceState` failure above. Firefox and Safari
+  do not implement the pickers anywhere. `canSaveInPlace` records which case
+  applies; when it is false the File menu items are relabelled
+  "Save (downloads)" at boot and the flash says why, because a silent
+  fallback just drops surprise copies in the downloads folder.
+- Consequence for the user: **open dote over http to edit files in place**
+  (`python3 -m http.server` in the project directory; localhost counts as a
+  secure context). Opening `index.html` from disk still works for reading,
+  drafting and the map, it just cannot write back.
+- A `FileSystemFileHandle` is not kept across reloads. It could be — handles
+  are structured-cloneable into IndexedDB and re-authorised with
+  `requestPermission` — but that is not implemented; after a reload the
+  session text comes back from `localStorage` while the handle does not, so
+  the first Save asks for a location again.
 - Session text is mirrored into `localStorage` under `dote.session` so a
   reload doesn't lose work. It is a convenience only — the file on disk is
   what counts.
@@ -234,9 +349,10 @@ else stays longitude first.
 - **Leaflet over MapLibre/OpenLayers.** Smallest dependency that does markers
   and drag well, and OSM raster tiles match how the format already refers to
   OSM.
-- **Custom editor over CodeMirror.** A textarea with a highlight layer is
-  ~250 lines, has no dependency, and gives exact control over the 80 column
-  width. Revisit if the editor needs folding, multi-cursor or wrapping.
+- **A bare textarea over CodeMirror.** The text pane started as a textarea
+  with a highlight layer and a line number gutter; both were removed on
+  request in favour of plain text. What is left is a textarea plus line
+  arithmetic — no dependency, exact control over the 80 column width.
 - **Map on the left, text on the right**, like geojson.io.
 - **Formatter preserves comments and directives in place** rather than
   regenerating the file from the parsed model, which would throw them away.
