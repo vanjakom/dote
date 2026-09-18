@@ -1675,16 +1675,24 @@ body {
    *   ?url=<url>          fetch the document from there on start
    *   ?writable=true      Save posts the document back to that same url
    *
-   * The url is taken literally, with one rewrite: a github.com blob address
-   * is the one you have in hand when browsing a repository, but it serves
-   * html and sends no CORS header, so it is turned into its raw form. That
-   * pattern can never be a POST target, so the rewrite cannot collide with a
-   * writable endpoint.
+   * The url is taken literally, with one rewrite: the two github.com
+   * addresses you actually have in hand when browsing a repository, the blob
+   * page and the "Raw" link, both point at raw.githubusercontent.com content
+   * without being fetchable themselves.
+   *
+   *   .../blob/...   serves html, and no CORS header at all
+   *   .../raw/...    a 302 to the raw host, carrying an *empty*
+   *                  Access-Control-Allow-Origin. an empty value matches no
+   *                  origin, so the browser rejects the redirect and never
+   *                  follows it to the file, which does allow the read
+   *
+   * Neither pattern can be a POST target, so the rewrite cannot collide with
+   * a writable endpoint.
    */
-  var GITHUB_BLOB = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/(.+)$/;
+  var GITHUB_PAGE = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(?:blob|raw)\/(.+)$/;
 
   function fetchableUrl(url) {
-    var match = GITHUB_BLOB.exec(url);
+    var match = GITHUB_PAGE.exec(url);
     return match
       ? 'https://raw.githubusercontent.com/' + match[1] + '/' + match[2] + '/' + match[3]
       : url;

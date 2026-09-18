@@ -176,11 +176,19 @@ keep those fields accurate in any parser change.
 
 Without `?url=` the document starts as `[humandot]\n\n` and nothing else.
 The url is used literally except for one
-rewrite: a `github.com/<owner>/<repo>/blob/<rest>` address becomes
-`raw.githubusercontent.com/<owner>/<repo>/<rest>`, because the blob address
-is the one you have in hand when browsing a repo but it serves html and no
-CORS header. That pattern can never be a POST target, so the rewrite cannot
-collide with a writable endpoint.
+rewrite: `github.com/<owner>/<repo>/{blob,raw}/<rest>` becomes
+`raw.githubusercontent.com/<owner>/<repo>/<rest>`. Those are the two
+addresses you actually have in hand when browsing a repo, and neither is
+fetchable as it stands:
+
+- `/blob/…` serves html, with no CORS header at all.
+- `/raw/…` is a `302` to the raw host carrying an **empty**
+  `Access-Control-Allow-Origin`. An empty value matches no origin, so the
+  browser rejects the redirect response and never follows it — even though
+  the file at the end of it does allow the read. Measured 2026-09-19.
+
+Neither pattern can be a POST target, so the rewrite cannot collide with a
+writable endpoint.
 
 The POST body is the whole file as `text/plain`, chosen so the request stays
 a CORS *simple request* — no preflight for the endpoint to answer, it only
