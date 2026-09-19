@@ -47,7 +47,7 @@ a divergence is listed under Gotchas below.
 
 ```
 +-------------------------------------------------------+
-| menu bar   File  Edit  View  Help                      |
+| menu bar   Options  [Repository]                       |
 +-----------------------------------+-------------------+
 |                                   |                   |
 |  map (Leaflet, OSM tiles)         |  text, 80 columns |
@@ -97,7 +97,7 @@ System Access API and `history.replaceState` both need. Everything works
 there that does not work from disk.
 
 The normal editing loop needs no server of your own: open the Pages url,
-**File ▸ Open**, pick the `.dot`, edit, ⌘S writes back to that same file.
+**Options ▸ Open**, pick the `.dot`, edit, ⌘S writes back to that same file.
 
 - Opening `index.html` from disk still works for reading, drafting and the
   map, but cannot save in place — see Gotchas. `python3 -m http.server` in
@@ -109,12 +109,17 @@ The normal editing loop needs no server of your own: open the Pages url,
 
 ## Architecture
 
-**The whole app is `index.html`.** One file, ~2300 lines, no build step, no
-`css/` or `js/` directory. Inside it, in order:
+**The whole app is `index.html`.** One file, ~2250 lines, no build step, no
+`css/` or `js/` directory. `README.md` beside it is the *only* user
+documentation — there is no in-app help, Options ▸ Documentation opens the
+README on github. Anything that would have been a help sheet goes in the README, so
+there is one copy of it and github renders it.
+
+Inside `index.html`, in order:
 
 ```
 <style>       all styling, one light theme
-markup        menu bar, panes, status bar, help dialog
+markup        menu bar, panes, status bar
 humandot      the file format: parse, classify, format, write. Pure, no DOM.
 editor        the text pane: a plain textarea plus line arithmetic
 dotmap        the map pane: a thin layer over Leaflet
@@ -149,6 +154,18 @@ Selection is synced in both directions: the cursor line determines the
 selected dot (`humandot.dotIndexAtLine`), and clicking a marker selects that
 dot's lines in the textarea.
 
+**Long press the map adds a dot** (`DotMap._bindLongPress`, 450ms, 6px of
+drift allowed) and leaves the caret on its tag line ready for a name — that
+placement comes free from `addDot`, which already moves the cursor to the
+indent and focuses the textarea. The press is abandoned on movement beyond
+the slop, or on Leaflet's `dragstart`/`zoomstart`/`mouseup`/`mouseout`, and
+Long press is now the *only* way to add a dot: "Add dot at map center" and
+"Add dot by clicking the map" were removed on 2026-09-20, which took the
+whole armed mechanism with them (`armed`, `setArmed`, `onAdd`, the map click
+handler, `_pressFired` and the `.map--armed` crosshair). "Delete dot at
+cursor" went the same day, so a dot is deleted by selecting its lines and
+typing over them like any other text.
+
 **New dots go on top.** `addDot` inserts above the first existing dot, never
 at the end, so the newest is always the first thing in the file
 (`newDotLine`). Comments written directly above that first dot belong to it
@@ -160,8 +177,12 @@ and never changes the zoom (`DotMap.panToDot` without a zoom argument). Only
 a change of selected dot triggers it — typing inside the same dot does not.
 Edits that originate on the map — clicking a marker, dragging one, adding a
 dot — run inside `withoutPan()` so the view does not jump away from the
-pointer. `View > Zoom to dot at cursor` is the one command that does change
-zoom, on purpose.
+pointer. `⌘G` is the one command that does change zoom, on purpose.
+
+**Two commands have no menu item and are reached by shortcut only**: `⌘⇧F`
+format and `⌘G` zoom to the dot at the cursor. `runAction` is the command
+table; the menu is one way into it and the keyboard another, so a `case`
+without a matching button is deliberate, not leftover.
 
 Each parsed dot carries `line`, `endLine` and `tagLines` (0-based line
 indexes into the document). That is what makes map ↔ text linkage possible;
@@ -252,7 +273,7 @@ uncomfortable:
 - `Origin: null` cannot be trusted, because a sandboxed iframe sends it too,
   so `file://` dote could never be allowed anyway.
 
-**Use File ▸ Open instead.** From the Pages deployment it opens any `.dot`
+**Use Options ▸ Open instead.** From the Pages deployment it opens any `.dot`
 anywhere with a picker and ⌘S writes back in place — same outcome, no server
 listening, no allow list to maintain. `?url=` stays useful for read only
 links against hosts that are already public, such as
@@ -305,7 +326,7 @@ else stays longitude first.
   meaning through the look of a glyph; states use background tints instead.
   If something needs to stand out, reach for a tint or a rule, never for
   colour, weight or decoration. This applies to the chrome too — the menu,
-  the status bar and the help sheet are all one weight.
+  the status bar and the menus are all one weight.
 - Because the text pane is undecorated there is **no highlight layer and no
   gutter**. Both existed and were deleted; do not reintroduce them without
   being asked. Diagnostics live in the status bar, which names the line of
@@ -377,7 +398,7 @@ else stays longitude first.
   expose `showSaveFilePicker` there at all and Save degrades to a download —
   the same root cause as the `replaceState` failure above. Firefox and Safari
   do not implement the pickers anywhere. `canSaveInPlace` records which case
-  applies; when it is false the File menu items are relabelled
+  applies; when it is false the Save menu items are relabelled
   "Save (downloads)" at boot and the flash says why, because a silent
   fallback just drops surprise copies in the downloads folder.
 - Consequence for the user: **use the Pages deployment to edit files in
@@ -412,6 +433,12 @@ else stays longitude first.
   or run in this workflow — a file that opens straight from disk is worth
   more here. the humandot section is isolated enough to be swapped for a cljs
   implementation later if that changes.
+- **One menu, not four.** File, Edit, View and Help were merged into a single
+  **Options** menu on 2026-09-20, with `<hr>` between the old groupings and
+  Documentation last. The menu bar is `dote · Options · [Repository]` — a
+  classic menu bar implies more app than this is. Do not split them back up
+  without being asked; new commands go into Options in the group they belong
+  to.
 - **One file, not a directory.** `css/` and `js/` were collapsed into
   `index.html` on 2026-09-19. The reason is deployment: a multi file page
   needs the server to get content types right, and Chrome refuses a

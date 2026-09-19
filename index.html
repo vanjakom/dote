@@ -90,14 +90,6 @@ body {
   user-select: none;
 }
 
-.menubar__brand {
-  display: flex;
-  align-items: center;
-  padding: 0 12px 0 6px;
-  font-family: var(--mono);
-  letter-spacing: 0.04em;
-}
-
 .menu { position: relative; }
 
 .menu__title {
@@ -146,6 +138,26 @@ body {
 }
 
 .menu__items button:hover { background: var(--tint); }
+
+/* a repository can hold more dots than fit on screen */
+.menu__items--tall {
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+/* namespace heading inside the repository menu, not selectable itself */
+.menu__group {
+  padding: 8px 10px 3px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: default;
+}
+
+.menu__group + button { border-top: 1px solid var(--border); border-radius: 0; }
+
+.menu__items button.is-current { background: var(--tint); }
 
 .menu__items hr {
   height: 0;
@@ -232,18 +244,14 @@ body {
   transform: scale(1.35);
 }
 
-.map--armed,
-.map--armed .leaflet-grab { cursor: crosshair; }
-
-.map-control__button {
-  font-size: 18px;
-  line-height: 26px;
-}
-
-.map-control__button.is-active {
-  background: var(--tint-strong);
-  color: var(--text);
-}
+/*
+ * Leaflet paints a grab hand over the whole map, and a grabbing fist while
+ * panning. The map here is read, clicked and long pressed far more than it is
+ * dragged, so it gets an ordinary pointer instead. Markers keep theirs: those
+ * really are clickable and draggable, and the hand says so.
+ */
+.leaflet-grab,
+.leaflet-dragging .leaflet-grab { cursor: default; }
 
 .leaflet-container { font: 12px var(--ui); }
 .leaflet-container a { color: var(--text); }
@@ -273,131 +281,30 @@ body {
 .status--problems:empty { display: none; }
 .status--coordinate { cursor: copy; }
 
-/* ---------------------------------------------------------------- sheet */
-
-.sheet {
-  width: min(720px, 90vw);
-  max-height: 80vh;
-  padding: 0;
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  background: var(--bg-raised);
-  color: var(--text);
-}
-
-.sheet::backdrop { background: rgba(0, 0, 0, 0.35); }
-
-.sheet__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-}
-
-.sheet__title {
-  margin: 0;
-  font-size: 14px;
-  font-weight: normal;
-}
-
-.sheet__close {
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  font-size: 20px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.sheet__body {
-  max-height: calc(80vh - 50px);
-  padding: 16px;
-  overflow: auto;
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.sheet__body h3 {
-  margin: 18px 0 6px;
-  font-size: 12px;
-  font-weight: normal;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.sheet__body h3:first-child { margin-top: 0; }
-
-.sheet__body pre {
-  margin: 0;
-  padding: 10px 12px;
-  background: var(--bg-sunken);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font-family: var(--mono);
-  font-size: 12px;
-  overflow-x: auto;
-}
-
-.sheet__body code {
-  font-family: var(--mono);
-  font-size: 12px;
-}
-
-.sheet__body table { width: 100%; border-collapse: collapse; }
-.sheet__body td { padding: 3px 0; vertical-align: top; }
-.sheet__body td:first-child {
-  width: 190px;
-  padding-right: 16px;
-  font-family: var(--mono);
-  white-space: nowrap;
-}
 </style>
 </head>
 <body>
 
 <div class="menubar" id="menubar">
-  <span class="menubar__brand">dote</span>
-
   <div class="menu" data-menu>
-    <button class="menu__title" type="button">File</button>
+    <button class="menu__title" type="button">Options</button>
     <div class="menu__items">
       <button type="button" data-action="file-new">New</button>
       <button type="button" data-action="file-open">Open&hellip;<span class="menu__hint" data-shortcut="O"></span></button>
-      <hr>
       <button type="button" data-action="file-save">Save<span class="menu__hint" data-shortcut="S"></span></button>
       <button type="button" data-action="file-save-as">Save as&hellip;</button>
-    </div>
-  </div>
-
-  <div class="menu" data-menu>
-    <button class="menu__title" type="button">Edit</button>
-    <div class="menu__items">
-      <button type="button" data-action="edit-format">Format document<span class="menu__hint" data-shortcut="&#8679;F"></span></button>
       <hr>
-      <button type="button" data-action="edit-add-here">Add dot at map center</button>
-      <button type="button" data-action="edit-add-click">Add dot by clicking the map</button>
-      <button type="button" data-action="edit-delete">Delete dot at cursor</button>
-    </div>
-  </div>
-
-  <div class="menu" data-menu>
-    <button class="menu__title" type="button">View</button>
-    <div class="menu__items">
       <button type="button" data-action="view-fit">Fit map to all dots</button>
-      <button type="button" data-action="view-zoom">Zoom to dot at cursor<span class="menu__hint" data-shortcut="G"></span></button>
-      <hr>
       <button type="button" data-action="view-toggle-editor">Hide the text pane</button>
+      <hr>
+      <button type="button" data-action="help-readme">Documentation<span class="menu__hint">github</span></button>
     </div>
   </div>
 
-  <div class="menu" data-menu>
-    <button class="menu__title" type="button">Help</button>
-    <div class="menu__items">
-      <button type="button" data-action="help-format">The humandot format</button>
-      <button type="button" data-action="help-keys">Keyboard shortcuts</button>
-      <button type="button" data-action="help-url">Opening from a url</button>
-    </div>
+  <!-- only shown when ?repository= names one -->
+  <div class="menu" data-menu id="repository-menu" hidden>
+    <button class="menu__title" type="button">Repository</button>
+    <div class="menu__items menu__items--tall" id="repository-items"></div>
   </div>
 </div>
 
@@ -426,14 +333,6 @@ body {
   <span class="status" id="status-cursor">Ln 1, Col 1</span>
   <span class="status status--coordinate" id="status-coordinate" title="longitude, latitude - click to copy"></span>
 </div>
-
-<dialog class="sheet" id="sheet">
-  <div class="sheet__head">
-    <h2 class="sheet__title" id="sheet-title"></h2>
-    <button class="sheet__close" type="button" data-action="sheet-close" aria-label="Close">&times;</button>
-  </div>
-  <div class="sheet__body" id="sheet-body"></div>
-</dialog>
 
 <input type="file" id="file-input" accept=".dot,text/plain" hidden>
 
@@ -1255,17 +1154,18 @@ body {
 
     this.onSelect = null;     // function(dotIndex)
     this.onMove = null;       // function(dotIndex, longitude, latitude)
-    this.onAdd = null;        // function(longitude, latitude)
+    this.onLongPress = null;  // function(longitude, latitude), press and hold
     this.onPointer = null;    // function({longitude, latitude} | null)
     this.onView = null;       // function({longitude, latitude, zoom})
 
     this.markers = [];
     this.dots = [];
     this.selected = -1;
-    this.armed = false;
     this._signature = null;
+    this._pressTimer = null;
+    this._pressAt = null;
 
-    this.map = L.map(element, { zoomControl: true, worldCopyJump: true })
+    this.map = L.map(element, { zoomControl: false, worldCopyJump: true })
       .setView(options.center || DEFAULT_CENTER, options.zoom || DEFAULT_ZOOM);
 
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -1276,17 +1176,10 @@ body {
     this.layer = L.layerGroup().addTo(this.map);
 
     this._bind();
-    this._addControls();
   }
 
   DotMap.prototype._bind = function () {
     var self = this;
-
-    this.map.on('click', function (event) {
-      if (!self.armed) return;
-      self.setArmed(false);
-      if (self.onAdd) self.onAdd(event.latlng.lng, event.latlng.lat);
-    });
 
     this.map.on('mousemove', function (event) {
       if (self.onPointer) self.onPointer({ longitude: event.latlng.lng, latitude: event.latlng.lat });
@@ -1299,35 +1192,45 @@ body {
     this.map.on('moveend zoomend', function () {
       self._emitView();
     });
+
+    this._bindLongPress();
   };
 
-  // a small button that arms "next click adds a dot"
-  DotMap.prototype._addControls = function () {
+  /*
+   * Press and hold on the map to drop a dot there. The pointer may drift a
+   * few pixels - a hand holding still is not perfectly still - but any real
+   * movement means a pan was intended, so the press is abandoned. Leaflet's
+   * own dragstart and zoomstart say the same thing more directly.
+   */
+  var LONG_PRESS_DELAY = 450;
+  var LONG_PRESS_SLOP = 6;
+
+  DotMap.prototype._bindLongPress = function () {
     var self = this;
-    var Control = L.Control.extend({
-      options: { position: 'topleft' },
-      onAdd: function () {
-        var container = L.DomUtil.create('div', 'leaflet-bar map-control');
-        var button = L.DomUtil.create('a', 'map-control__button', container);
-        button.href = '#';
-        button.title = 'Add a dot (click the map)';
-        button.innerHTML = '+';
-        L.DomEvent.on(button, 'click', function (event) {
-          L.DomEvent.stop(event);
-          self.setArmed(!self.armed);
-        });
-        self._addButton = button;
-        return container;
-      }
+
+    this.map.on('mousedown', function (event) {
+      self._cancelPress();
+      self._pressAt = event.containerPoint;
+      self._pressTimer = global.setTimeout(function () {
+        self._pressTimer = null;
+        if (self.onLongPress) self.onLongPress(event.latlng.lng, event.latlng.lat);
+      }, LONG_PRESS_DELAY);
     });
-    this.map.addControl(new Control());
+
+    this.map.on('mousemove', function (event) {
+      if (!self._pressTimer) return;
+      if (event.containerPoint.distanceTo(self._pressAt) > LONG_PRESS_SLOP) self._cancelPress();
+    });
+
+    this.map.on('mouseup dragstart zoomstart mouseout', function () {
+      self._cancelPress();
+    });
   };
 
-  DotMap.prototype.setArmed = function (armed) {
-    this.armed = !!armed;
-    var container = this.map.getContainer();
-    container.classList.toggle('map--armed', this.armed);
-    if (this._addButton) this._addButton.classList.toggle('is-active', this.armed);
+  DotMap.prototype._cancelPress = function () {
+    if (this._pressTimer) global.clearTimeout(this._pressTimer);
+    this._pressTimer = null;
+    this._pressAt = null;
   };
 
   DotMap.prototype._emitView = function () {
@@ -1461,6 +1364,8 @@ body {
   // what an unnamed document starts as, nothing but the magic line
   var TEMPLATE = '[humandot]\n\n';
 
+  var README_URL = 'https://github.com/vanjakom/dote#readme';
+
   var PARSE_DELAY = 120;
   var HASH_DELAY = 300;
   var NEW_DOT_PRECISION = 6;
@@ -1475,8 +1380,10 @@ body {
     savedText: '',
     selected: -1,
     suppressPan: false,
-    sourceUrl: null,   // set when the document came from ?url=
-    writable: false    // ?writable=true, the source url takes it back on POST
+    sourceUrl: null,       // set when the document came from a url
+    writable: false,       // that url takes the document back on POST
+    repositoryBase: null,  // ?repository=, the base url of the listing
+    repositoryDot: null    // "namespace:id" of the dot currently open
   };
 
   var editor;
@@ -1523,12 +1430,17 @@ body {
     state.fileHandle = fileHandle || null;
     state.savedText = text;
     state.selected = -1;
-    state.sourceUrl = null;   // whatever loads from a url sets this afterwards
+    // whatever loads from a url sets these afterwards. clearing them here is
+    // what makes Options > New and Options > Open stop saving to the old place
+    state.sourceUrl = null;
+    state.writable = false;
+    state.repositoryDot = null;
+    if (elements.repositoryItems) markCurrentRepositoryDot();
     withoutPan(function () {
       editor.setValue(text);
       reparse();
     });
-    if (!keepView && !dotMap.fitToDots()) flash('no dots yet - use Edit > Add dot');
+    if (!keepView && !dotMap.fitToDots()) flash('no dots yet - use Options > Add dot');
     updateStatus();
   }
 
@@ -1585,11 +1497,6 @@ body {
     });
   }
 
-  function dotAtCursor() {
-    var index = humandot.dotIndexAtLine(state.parsed.dots, editor.cursor().line);
-    return index < 0 ? null : state.parsed.dots[index];
-  }
-
   /* ----------------------------------------------------------- dot editing */
 
   /*
@@ -1641,20 +1548,6 @@ body {
       reparse();
     });
     flash('moved to ' + coordinateText(longitude, latitude));
-  }
-
-  function deleteDotAtCursor() {
-    var dot = dotAtCursor();
-    if (!dot) {
-      flash('put the cursor inside a dot first');
-      return;
-    }
-    var lines = humandot.splitLines(editor.getValue());
-    var last = dot.endLine;
-    if (last + 1 < lines.length && lines[last + 1].trim() === '') last += 1;
-    editor.removeLines(dot.line, last);
-    reparse();
-    flash('dot deleted');
   }
 
   function formatDocument() {
@@ -1710,27 +1603,119 @@ body {
   function readParameters() {
     var parameters = new URLSearchParams(global.location.search);
     var url = parameters.get('url');
+    var repository = parameters.get('repository');
     var writable = parameters.get('writable');
     return {
       url: url ? fetchableUrl(url.trim()) : null,
+      repository: repository ? repository.trim() : null,
       writable: writable === 'true' || writable === '1'
     };
   }
 
-  async function loadFromUrl(url, keepView) {
+  async function loadFromUrl(url, keepView, writable) {
     flash('loading ' + url);
     try {
       var response = await fetch(url, { headers: { Accept: 'text/plain' } });
       if (!response.ok) throw new Error(response.status + ' ' + response.statusText);
       var text = await response.text();
       setDocument(text, fileNameFor(url), null, keepView);
-      state.sourceUrl = url;   // setDocument cleared it, this is where it came from
+      // setDocument cleared both, this is where the document came from and
+      // whether that place takes it back
+      state.sourceUrl = url;
+      state.writable = !!writable;
       updateStatus();
       flash('loaded ' + url);
+      return true;
     } catch (error) {
       // a failure here is almost always the endpoint not allowing the origin
       flash('could not load ' + url + ': ' + error.message);
+      return false;
     }
+  }
+
+  /* ---------------------------------------------------------- repository */
+
+  /*
+   * A repository is a base url serving a listing of the dots it holds and the
+   * dots themselves:
+   *
+   *   <base>repository.json          {namespace: {id: {path, type}}}
+   *   <base>data/<namespace>/<id>.dot
+   *
+   * Dots are addressed as namespace:id, never by path - what the listing does
+   * not name cannot be reached. A POST to the same data url saves, so a
+   * repository dot is writable without ?writable=.
+   *
+   * Both names end in a file extension on purpose. They are file names rather
+   * than route names so that a repository can equally well be a directory of
+   * files on a static host.
+   */
+  function repositoryUrl(suffix) {
+    var base = state.repositoryBase;
+    return new URL(suffix, /\/$/.test(base) ? base : base + '/').href;
+  }
+
+  function dotUrl(namespace, id) {
+    return repositoryUrl('data/' + encodeURIComponent(namespace) + '/' +
+      encodeURIComponent(id) + '.dot');
+  }
+
+  async function loadRepository() {
+    var url = repositoryUrl('repository.json');
+    try {
+      var response = await fetch(url, { headers: { Accept: 'application/json' } });
+      if (!response.ok) throw new Error(response.status + ' ' + response.statusText);
+      return await response.json();
+    } catch (error) {
+      flash('could not read ' + url + ': ' + error.message);
+      return null;
+    }
+  }
+
+  function buildRepositoryMenu(repository) {
+    var items = elements.repositoryItems;
+    items.textContent = '';
+    var count = 0;
+
+    Object.keys(repository).sort().forEach(function (namespace) {
+      var group = document.createElement('div');
+      group.className = 'menu__group';
+      group.textContent = namespace;
+      items.appendChild(group);
+
+      Object.keys(repository[namespace]).sort().forEach(function (id) {
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = id;
+        button.setAttribute('data-namespace', namespace);
+        button.setAttribute('data-id', id);
+        items.appendChild(button);
+        count += 1;
+      });
+    });
+
+    elements.repositoryMenu.hidden = count === 0;
+    return count;
+  }
+
+  function openRepositoryDot(namespace, id) {
+    if (isModified() && !global.confirm('Discard unsaved changes?')) return;
+    var name = namespace + ':' + id;
+    // named only once it actually loaded, so a failed fetch does not leave the
+    // menu claiming a dot is open
+    loadFromUrl(dotUrl(namespace, id), false, true).then(function (loaded) {
+      if (!loaded) return;
+      state.repositoryDot = name;
+      markCurrentRepositoryDot();
+      updateStatus();
+    });
+  }
+
+  function markCurrentRepositoryDot() {
+    elements.repositoryItems.querySelectorAll('[data-id]').forEach(function (button) {
+      var name = button.getAttribute('data-namespace') + ':' + button.getAttribute('data-id');
+      button.classList.toggle('is-current', name === state.repositoryDot);
+    });
   }
 
   /* ---------------------------------------------------------------- files */
@@ -1921,7 +1906,7 @@ body {
   function updateStatus(cursor) {
     cursor = cursor || editor.cursor();
 
-    elements.file.textContent = state.fileName;
+    elements.file.textContent = state.repositoryDot || state.fileName;
     elements.file.classList.toggle('is-modified', isModified());
     elements.file.title = state.sourceUrl
       ? state.sourceUrl + (state.writable ? ' (Save posts back here)' : ' (read only)')
@@ -1996,6 +1981,12 @@ body {
         runAction(button.getAttribute('data-action'));
         return;
       }
+      var dot = event.target.closest('[data-namespace][data-id]');
+      if (dot) {
+        closeMenus();
+        openRepositoryDot(dot.getAttribute('data-namespace'), dot.getAttribute('data-id'));
+        return;
+      }
       if (!event.target.closest('[data-menu]')) closeMenus();
     });
 
@@ -2018,31 +2009,21 @@ body {
       case 'file-save': saveFile(); break;
       case 'file-save-as': saveFileAs(); break;
 
+      // no menu item any more, these two are reached by their shortcut only
       case 'edit-format': formatDocument(); break;
-      case 'edit-add-here':
-        var center = dotMap.center();
-        addDot(center.longitude, center.latitude);
-        break;
-      case 'edit-add-click':
-        dotMap.setArmed(true);
-        flash('click the map to place a dot, Esc cancels');
-        break;
-      case 'edit-delete': deleteDotAtCursor(); break;
-
-      case 'view-fit':
-        if (!dotMap.fitToDots()) flash('no dots with valid coordinates');
-        break;
       case 'view-zoom':
         if (state.selected < 0) flash('put the cursor inside a dot first');
         else dotMap.panToDot(state.selected, 15);
         break;
+
+      case 'view-fit':
+        if (!dotMap.fitToDots()) flash('no dots with valid coordinates');
+        break;
       case 'view-toggle-editor': toggleEditorPane(); break;
 
-      case 'help-format': showSheet('The humandot format', FORMAT_HELP); break;
-      case 'help-keys': showSheet('Keyboard shortcuts', keyboardHelp()); break;
-      case 'help-url': showSheet('Opening from a url', URL_HELP); break;
-
-      case 'sheet-close': elements.sheet.close(); break;
+      // the documentation lives in README.md, so there is one copy of it and
+      // github renders it
+      case 'help-readme': global.open(README_URL, '_blank', 'noopener,noreferrer'); break;
     }
   }
 
@@ -2053,99 +2034,12 @@ body {
     dotMap.invalidateSize();
   }
 
-  /* ----------------------------------------------------------------- help */
-
-  var FORMAT_HELP = [
-    '<h3>Shape of a file</h3>',
-    '<pre>[humandot]\n',
-    '; tags used\n;    #camp - a place to sleep\n\n',
-    '[tag:#trip2026]\n\n',
-    '20.4612, 44.8125\n   Beograd\n   #capital\n   |population|1370000\n',
-    '   https://www.openstreetmap.org/relation/1677007\n\n',
-    '19.8335, 45.2671\n   Novi Sad\n   @visited\n</pre>',
-    '<h3>Lines</h3>',
-    '<table>',
-    '<tr><td>[humandot]</td><td>first line of every file</td></tr>',
-    '<tr><td>[tag:#x]</td><td>directive, appends #x to every dot in the file</td></tr>',
-    '<tr><td>; text</td><td>comment, ignored by readers</td></tr>',
-    '<tr><td>longitude, latitude</td><td>starts a dot - longitude comes first</td></tr>',
-    '<tr><td>&nbsp;&nbsp;&nbsp;tag</td><td>indented line, belongs to the dot above</td></tr>',
-    '<tr><td>(blank line)</td><td>closes the dot</td></tr>',
-    '</table>',
-    '<h3>Tags</h3>',
-    '<table>',
-    '<tr><td>#label</td><td>public label</td></tr>',
-    '<tr><td>@label</td><td>personal label</td></tr>',
-    '<tr><td>|key|value</td><td>key and value pair</td></tr>',
-    '<tr><td>https://&hellip;</td><td>reference, OpenStreetMap links preferred</td></tr>',
-    '<tr><td>---</td><td>separates extracted tags from added ones</td></tr>',
-    '<tr><td>===</td><td>separates public tags from private ones</td></tr>',
-    '<tr><td>anything else</td><td>free text, the first one names the dot</td></tr>',
-    '</table>'
-  ].join('');
-
-  var URL_HELP = [
-    '<h3>Parameters</h3>',
-    '<table>',
-    '<tr><td>?url=&hellip;</td><td>fetch the document from there when dote starts, ',
-    'instead of opening an empty one</td></tr>',
-    '<tr><td>?writable=true</td><td>Save posts the document back to that same url</td></tr>',
-    '</table>',
-    '<h3>Example</h3>',
-    '<pre>index.html?url=https://raw.githubusercontent.com/you/dots/master/camps.dot</pre>',
-    '<h3>What the other end has to do</h3>',
-    '<table>',
-    '<tr><td>reading</td><td>answer the GET with the file and an ',
-    '<code>Access-Control-Allow-Origin</code> header. raw.githubusercontent.com ',
-    'already does; a github.com &hellip;/blob/&hellip; address is rewritten to its raw ',
-    'form for you</td></tr>',
-    '<tr><td>writing</td><td>accept a POST whose body is the whole file as ',
-    '<code>text/plain</code>, and allow the origin on the response. Sending it as ',
-    'text/plain keeps it a simple request, so there is no preflight to answer</td></tr>',
-    '</table>',
-    '<h3>Notes</h3>',
-    '<table>',
-    '<tr><td>the map view</td><td>the <code>#map=</code> hash still applies, so one link ',
-    'can carry both the file and where to look</td></tr>',
-    '<tr><td>without writable</td><td>the document is read only; Save falls back to ',
-    'writing a local copy</td></tr>',
-    '</table>'
-  ].join('');
-
-  function keyboardHelp() {
-    var modifier = isApple ? '⌘' : 'Ctrl+';
-    var rows = [
-      [modifier + 'O', 'open a file'],
-      [modifier + 'S', 'save'],
-      [modifier + '⇧F', 'format the document'],
-      [modifier + 'G', 'zoom the map to the dot at the cursor'],
-      ['Enter', 'in a dot, start the next tag already indented'],
-      ['⇧Enter', 'a plain newline, no indent'],
-      ['Tab', 'insert the tag indent'],
-      ['click a link', 'open it in a new tab'],
-      [(isApple ? '⌥' : 'Alt') + ' click a link', 'place the caret in it instead'],
-      ['Esc', 'close a menu, cancel adding a dot'],
-      ['click a marker', 'select that dot in the text'],
-      ['drag a marker', 'rewrite its coordinate line']
-    ];
-    return '<table>' + rows.map(function (row) {
-      return '<tr><td>' + row[0] + '</td><td>' + row[1] + '</td></tr>';
-    }).join('') + '</table>';
-  }
-
-  function showSheet(title, html) {
-    elements.sheetTitle.textContent = title;
-    elements.sheetBody.innerHTML = html;
-    elements.sheet.showModal();
-  }
-
   /* ------------------------------------------------------------ shortcuts */
 
   function setUpShortcuts() {
     document.addEventListener('keydown', function (event) {
       if (event.key === 'Escape') {
         closeMenus();
-        dotMap.setArmed(false);
         return;
       }
       var modifier = isApple ? event.metaKey : event.ctrlKey;
@@ -2177,10 +2071,9 @@ body {
       cursor: byId('status-cursor'),
       coordinate: byId('status-coordinate'),
       editorPane: byId('editor-pane'),
-      fileInput: byId('file-input'),
-      sheet: byId('sheet'),
-      sheetTitle: byId('sheet-title'),
-      sheetBody: byId('sheet-body')
+      repositoryMenu: byId('repository-menu'),
+      repositoryItems: byId('repository-items'),
+      fileInput: byId('file-input')
     };
 
     editor = new global.DOTE.Editor({ textarea: byId('text') });
@@ -2205,7 +2098,7 @@ body {
 
     dotMap.onSelect = function (index) { selectDot(index); };
     dotMap.onMove = function (index, longitude, latitude) { moveDot(index, longitude, latitude); };
-    dotMap.onAdd = function (longitude, latitude) { addDot(longitude, latitude); };
+    dotMap.onLongPress = function (longitude, latitude) { addDot(longitude, latitude); };
     dotMap.onPointer = function (pointer) { showCoordinate(pointer); };
     dotMap.onView = function () {
       showCoordinate(null);
@@ -2251,10 +2144,11 @@ body {
 
     var parameters = readParameters();
     state.writable = parameters.writable;
+    state.repositoryBase = parameters.repository;
 
     // say up front that Save cannot write back, rather than letting it look
     // like it worked and leaving a copy in the downloads folder
-    if (!canSaveInPlace && !state.writable) {
+    if (!canSaveInPlace && !state.writable && !state.repositoryBase) {
       document.querySelectorAll('[data-action="file-save"], [data-action="file-save-as"]')
         .forEach(function (button) {
           button.firstChild.nodeValue = button.firstChild.nodeValue.trim() + ' (downloads)';
@@ -2268,9 +2162,18 @@ body {
     // or the document starts empty
     if (parameters.url) {
       setDocument('', fileNameFor(parameters.url), null, true);
-      loadFromUrl(parameters.url, !!view);
+      loadFromUrl(parameters.url, !!view, parameters.writable);
     } else {
       setDocument(TEMPLATE, 'untitled.dot', null, !!view);
+    }
+
+    // the menu appears only once the listing has actually answered
+    if (state.repositoryBase) {
+      loadRepository().then(function (repository) {
+        if (!repository) return;   // loadRepository already said why
+        var count = buildRepositoryMenu(repository);
+        flash(count + (count === 1 ? ' dot' : ' dots') + ' in the repository');
+      });
     }
 
     if (view) dotMap.setView(view);
