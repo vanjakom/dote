@@ -97,7 +97,8 @@ System Access API and `history.replaceState` both need. Everything works
 there that does not work from disk.
 
 The normal editing loop needs no server of your own: open the Pages url,
-**Options ▸ Open**, pick the `.dot`, edit, ⌘S writes back to that same file.
+**Options ▸ Open**, pick the `.dot`, edit, **Options ▸ Save** writes back to
+that same file.
 
 - Opening `index.html` from disk still works for reading, drafting and the
   map, but cannot save in place — see Gotchas. `python3 -m http.server` in
@@ -123,7 +124,7 @@ markup        menu bar, panes, status bar
 humandot      the file format: parse, classify, format, write. Pure, no DOM.
 editor        the text pane: a plain textarea plus line arithmetic
 dotmap        the map pane: a thin layer over Leaflet
-app           wiring: menus, shortcuts, file IO, status bar, sync
+app           wiring: menus, file IO, status bar, selection sync
 ```
 
 Each of those four is an IIFE hanging off `window.DOTE`, exactly as when they
@@ -158,13 +159,22 @@ dot's lines in the textarea.
 drift allowed) and leaves the caret on its tag line ready for a name — that
 placement comes free from `addDot`, which already moves the cursor to the
 indent and focuses the textarea. The press is abandoned on movement beyond
-the slop, or on Leaflet's `dragstart`/`zoomstart`/`mouseup`/`mouseout`, and
+the slop, or on Leaflet's `dragstart`/`zoomstart`/`mouseup`/`mouseout`.
+
 Long press is now the *only* way to add a dot: "Add dot at map center" and
 "Add dot by clicking the map" were removed on 2026-09-20, which took the
 whole armed mechanism with them (`armed`, `setArmed`, `onAdd`, the map click
 handler, `_pressFired` and the `.map--armed` crosshair). "Delete dot at
 cursor" went the same day, so a dot is deleted by selecting its lines and
 typing over them like any other text.
+
+**`Options > Copy dot`** (`copyDot`) writes the dot at the cursor to the
+clipboard as `humandot.dotToString` would write it, but built from `allTags`
+rather than `tags` — so the file's `[tag:x]` defaults come along, appended
+last. It copies the *parsed* dot rather than the lines under the cursor, and
+that is the whole point: the defaults live in the header, so lifting the
+lines would leave them behind. `copyToClipboard` reports both failure modes
+(no clipboard API, permission refused) instead of doing nothing quietly.
 
 **New dots go on top.** `addDot` inserts above the first existing dot, never
 at the end, so the newest is always the first thing in the file
@@ -177,12 +187,8 @@ and never changes the zoom (`DotMap.panToDot` without a zoom argument). Only
 a change of selected dot triggers it — typing inside the same dot does not.
 Edits that originate on the map — clicking a marker, dragging one, adding a
 dot — run inside `withoutPan()` so the view does not jump away from the
-pointer. `⌘G` is the one command that does change zoom, on purpose.
-
-**Two commands have no menu item and are reached by shortcut only**: `⌘⇧F`
-format and `⌘G` zoom to the dot at the cursor. `runAction` is the command
-table; the menu is one way into it and the keyboard another, so a `case`
-without a matching button is deliberate, not leftover.
+pointer. Nothing changes the zoom on the reader's behalf any more —
+`panToDot` only centres.
 
 Each parsed dot carries `line`, `endLine` and `tagLines` (0-based line
 indexes into the document). That is what makes map ↔ text linkage possible;
@@ -274,7 +280,8 @@ uncomfortable:
   so `file://` dote could never be allowed anyway.
 
 **Use Options ▸ Open instead.** From the Pages deployment it opens any `.dot`
-anywhere with a picker and ⌘S writes back in place — same outcome, no server
+anywhere with a picker and Options ▸ Save writes back in place — same
+outcome, no server
 listening, no allow list to maintain. `?url=` stays useful for read only
 links against hosts that are already public, such as
 raw.githubusercontent.com.
@@ -291,6 +298,46 @@ under Chrome's Private Network Access rules (public origin → loopback),
 which force a preflight the server would have to answer with
 `Access-Control-Allow-Private-Network: true` — another reason the route was
 dropped rather than supported.
+
+### Autosave
+
+**Only repository dots autosave** (`autosaves()` — needs `repositoryDot`,
+`writable` and `sourceUrl`). They are the one destination where a write is a
+single idempotent POST to a url the listing already vouched for, and where
+the file on the far end is in git, which is the real undo. A picker-opened
+file and a bare `?writable=` endpoint still save only when asked. **A
+document with nowhere to go must never autosave**: Save falls back to a
+download there, so every pause in typing would drop a file in `~/Downloads`.
+
+Debounced 2s after the last keystroke, flushed at once on textarea `blur`,
+`visibilitychange → hidden` and `pagehide` (the last two with
+`fetch(keepalive: true)`, or the request dies with the page — note its 64KB
+body limit, which `camps.dot` at 52KB is not far from).
+
+Three guards, each there for a reason that is easy to undo by accident:
+
+- **Held while the parse has errors.** A half-typed coordinate (`20.`) is an
+  error, so without it a pause mid-edit writes a broken file over a good one.
+  Self-correcting: the fix is a keystroke, which schedules the next attempt.
+  `flushAutosave` forces `reparse()` first, because a blur right after a
+  keystroke can beat the 120ms parse debounce and the guard must not read a
+  stale parse.
+- **One write in flight**, with at most one queued follow-up, so a slow
+  response cannot land after a newer one.
+- **`state.savedText` is set from the text that was sent**, not from
+  `editor.getValue()` when the response lands — typing during a request has
+  to stay unsaved. This is why the autosave path does not call `markSaved()`.
+
+`sendToSource` is the single request both manual and automatic saves use. It
+sends `If-Match` when the source gave an `ETag` on read, and a `409` means
+the dot changed underneath. That sets `saveState = 'stale'`, which autosave
+refuses to retry — a conflict needs a person. `uberjvm.desktop.dote` builds
+the ETag from mtime and length; it is not a content hash and does not need to
+be, it only has to change when the file does.
+
+The status bar (`#status-save`, `saveLabel`) is the whole trust surface:
+saving is invisible and there are no shortcuts, so it is the only place that
+can say a save is being held back.
 
 ### Map view in the url
 
@@ -433,6 +480,13 @@ else stays longitude first.
   or run in this workflow — a file that opens straight from disk is worth
   more here. the humandot section is isolated enough to be swapped for a cljs
   implementation later if that changes.
+- **No keyboard shortcuts.** ⌘S, ⌘O, ⌘G and ⌘⇧F were removed on 2026-09-20,
+  along with the `data-shortcut` hints in the menu and the `isApple` platform
+  check they needed. The Options menu is the only way to reach a command.
+  Escape still dismisses an open menu — that is dismissal, not a command, and
+  it now lives in `setUpMenus` where it belongs. The `beforeunload` guard used
+  to sit inside `setUpShortcuts`; it survived as `setUpUnloadGuard` and must
+  stay wired, because nothing is persisted in the browser.
 - **One menu, not four.** File, Edit, View and Help were merged into a single
   **Options** menu on 2026-09-20, with `<hr>` between the old groupings and
   Documentation last. The menu bar is `dote · Options · [Repository]` — a

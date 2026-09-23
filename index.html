@@ -290,9 +290,11 @@ body {
     <button class="menu__title" type="button">Options</button>
     <div class="menu__items">
       <button type="button" data-action="file-new">New</button>
-      <button type="button" data-action="file-open">Open&hellip;<span class="menu__hint" data-shortcut="O"></span></button>
-      <button type="button" data-action="file-save">Save<span class="menu__hint" data-shortcut="S"></span></button>
+      <button type="button" data-action="file-open">Open&hellip;</button>
+      <button type="button" data-action="file-save">Save</button>
       <button type="button" data-action="file-save-as">Save as&hellip;</button>
+      <hr>
+      <button type="button" data-action="edit-copy">Copy dot</button>
       <hr>
       <button type="button" data-action="view-fit">Fit map to all dots</button>
       <button type="button" data-action="view-toggle-editor">Hide the text pane</button>
@@ -325,6 +327,7 @@ body {
 
 <div class="statusbar" id="statusbar">
   <span class="status status--file" id="status-file">untitled.dot</span>
+  <span class="status" id="status-save"></span>
   <span class="status" id="status-dots">0 dots</span>
   <span class="status status--problems" id="status-problems"></span>
   <span class="status status--message" id="status-message"></span>
@@ -1303,14 +1306,11 @@ body {
 
   /* ------------------------------------------------------------------ view */
 
-  DotMap.prototype.panToDot = function (index, zoom) {
+  // centres only, the zoom is the reader's to choose
+  DotMap.prototype.panToDot = function (index) {
     var dot = this.dots[index];
     if (!dot || !dot.valid) return;
-    if (zoom) {
-      this.map.setView([dot.latitude, dot.longitude], Math.max(this.map.getZoom(), zoom));
-    } else {
-      this.map.panTo([dot.latitude, dot.longitude]);
-    }
+    this.map.panTo([dot.latitude, dot.longitude]);
   };
 
   DotMap.prototype.revealDot = function (index) {
@@ -1368,10 +1368,9 @@ body {
 
   var PARSE_DELAY = 120;
   var HASH_DELAY = 300;
+  var AUTOSAVE_DELAY = 2000;
   var NEW_DOT_PRECISION = 6;
   var HASH_PRECISION = 5;
-
-  var isApple = /Mac|iPhone|iPad/.test(global.navigator.platform || '');
 
   var state = {
     parsed: { dots: [], problems: [], defaultTags: [] },
@@ -1383,7 +1382,12 @@ body {
     sourceUrl: null,       // set when the document came from a url
     writable: false,       // that url takes the document back on POST
     repositoryBase: null,  // ?repository=, the base url of the listing
-    repositoryDot: null    // "namespace:id" of the dot currently open
+    repositoryDot: null,   // "namespace:id" of the dot currently open
+    sourceEtag: null,      // ETag the source gave us, sent back as If-Match
+    saveState: 'clean',    // clean | saving | saved | held | failed | stale
+    saveMessage: '',       // what the status bar says about it
+    saveInFlight: false,   // one write at a time
+    savePending: false     // edits arrived while that write was in the air
   };
 
   var editor;
@@ -1406,6 +1410,12 @@ body {
     return Math.round(value * factor) / factor;
   }
 
+  function clockTime() {
+    var now = new Date();
+    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+    return pad(now.getHours()) + ':' + pad(now.getMinutes());
+  }
+
   function coordinateText(longitude, latitude) {
     return humandot.formatNumber(round(longitude, NEW_DOT_PRECISION)) + ', ' +
       humandot.formatNumber(round(latitude, NEW_DOT_PRECISION));
@@ -1419,6 +1429,22 @@ body {
         elements.message.textContent = '';
       }, 4000);
     }
+  }
+
+  /*
+   * Writing to the clipboard needs a secure context, and the permission can be
+   * refused, so both failures are reported. A menu command that quietly does
+   * nothing is worse than one that says why.
+   */
+  function copyToClipboard(text, what) {
+    if (!global.navigator.clipboard) {
+      flash('this browser will not let the page write to the clipboard');
+      return;
+    }
+    global.navigator.clipboard.writeText(text).then(
+      function () { flash('copied ' + what); },
+      function (error) { flash('could not copy: ' + error.message); }
+    );
   }
 
   /* -------------------------------------------------------------- document */
@@ -1435,6 +1461,11 @@ body {
     state.sourceUrl = null;
     state.writable = false;
     state.repositoryDot = null;
+    state.sourceEtag = null;
+    state.saveState = 'clean';
+    state.saveMessage = '';
+    state.savePending = false;
+    global.clearTimeout(timers.autosave);
     if (elements.repositoryItems) markCurrentRepositoryDot();
     withoutPan(function () {
       editor.setValue(text);
@@ -1550,16 +1581,132 @@ body {
     flash('moved to ' + coordinateText(longitude, latitude));
   }
 
-  function formatDocument() {
-    // the whole document is replaced, so the cursor passes through the end of
-    // the text on the way back - not a reason to move the map
-    withoutPan(function () {
-      var cursor = editor.cursor();
-      editor.replaceRange(0, editor.getValue().length, humandot.format(editor.getValue()));
-      reparse();
-      editor.moveCursorTo(Math.min(cursor.line, editor.lineCount() - 1), 0);
+  /*
+   * The dot at the cursor as it would be written on its own: its coordinate
+   * line, its own tags, then the file's [tag:x] defaults last.
+   *
+   * It copies the *parsed* dot rather than the lines under the cursor, and
+   * that is the point - the defaults live in the file header, not in the dot,
+   * so lifting the lines would leave them behind. `allTags` is already the
+   * dot's tags followed by the defaults, in that order.
+   */
+  function copyDot() {
+    if (state.selected < 0) {
+      flash('put the cursor inside a dot first');
+      return;
+    }
+    var dot = state.parsed.dots[state.selected];
+    var text = humandot.dotToString({
+      longitude: dot.longitude,
+      latitude: dot.latitude,
+      tags: dot.allTags
     });
-    flash('document formatted');
+    copyToClipboard(text, humandot.label(dot) || 'dot');
+  }
+
+  /* ------------------------------------------------------------- autosave */
+
+  /*
+   * Only dots opened from the Repository menu save themselves.
+   *
+   * They are the one destination where a write is a single idempotent POST to
+   * a url the listing already vouched for, and where the file on the far end
+   * lives in git - which is the real undo. A document opened with the file
+   * picker, or ?writable= pointing at some other endpoint, still saves only
+   * when asked. A document with nowhere to go must never autosave: Save falls
+   * back to a download, so a pause in typing would drop a file in ~/Downloads
+   * every couple of seconds.
+   */
+  function autosaves() {
+    return !!(state.repositoryDot && state.writable && state.sourceUrl);
+  }
+
+  function parseErrors() {
+    return state.parsed.problems.filter(function (problem) {
+      return problem.severity === 'error';
+    });
+  }
+
+  function setSaveState(kind, message) {
+    state.saveState = kind;
+    state.saveMessage = message;
+    updateStatus();
+  }
+
+  function saveLabel() {
+    // a conflict or a failure stands until something is done about it
+    if (state.saveState === 'stale' || state.saveState === 'failed') return state.saveMessage;
+    if (state.saveState === 'saving') return 'saving';
+    if (isModified()) return state.saveState === 'held' ? state.saveMessage : 'unsaved';
+    return state.saveMessage;
+  }
+
+  function scheduleAutosave() {
+    if (!autosaves()) return;
+    debounce('autosave', AUTOSAVE_DELAY, function () { autosave(false); });
+  }
+
+  /*
+   * Blur, a hidden tab and unload do not wait out the debounce. The parse is
+   * forced first: it runs on a shorter debounce than the autosave, but a blur
+   * arriving right after a keystroke can still beat it, and the error guard
+   * has to read a current parse rather than the one before the last edit.
+   */
+  function flushAutosave(keepalive) {
+    if (!autosaves() || !isModified()) return;
+    global.clearTimeout(timers.autosave);
+    global.clearTimeout(timers.parse);
+    reparse();
+    autosave(keepalive);
+  }
+
+  /*
+   * Held back while the document has parse errors. A half typed coordinate
+   * ("20.", "20.4") is an error, so without this every pause mid edit would
+   * write a broken file over a good one. It is self correcting - the fix is a
+   * keystroke, and that schedules the next attempt.
+   */
+  async function autosave(keepalive) {
+    if (!autosaves() || !isModified()) return;
+
+    var errors = parseErrors();
+    if (errors.length) {
+      setSaveState('held',
+        errors.length + (errors.length === 1 ? ' error' : ' errors') + ', not saved');
+      return;
+    }
+
+    // a conflict is not retried on its own, it needs a person to look
+    if (state.saveState === 'stale') return;
+
+    // one write at a time, so a slow response cannot land after a newer one
+    if (state.saveInFlight) {
+      state.savePending = true;
+      return;
+    }
+
+    state.saveInFlight = true;
+    setSaveState('saving', 'saving');
+
+    // the text that was actually sent, not whatever is in the textarea when
+    // the response lands - typing during the request must stay unsaved
+    var text = editor.getValue();
+    try {
+      await sendToSource(text, keepalive);
+      state.savedText = text;
+      setSaveState('saved', 'saved ' + clockTime());
+    } catch (error) {
+      setSaveState(error.conflict ? 'stale' : 'failed', 'not saved: ' + error.message);
+      if (error.conflict) {
+        flash('this dot changed since you opened it - reopen it from the Repository menu');
+      }
+    } finally {
+      state.saveInFlight = false;
+      if (state.savePending) {
+        state.savePending = false;
+        autosave(false);
+      }
+    }
   }
 
   /* ----------------------------------------------------------- parameters */
@@ -1618,11 +1765,13 @@ body {
       var response = await fetch(url, { headers: { Accept: 'text/plain' } });
       if (!response.ok) throw new Error(response.status + ' ' + response.statusText);
       var text = await response.text();
+      var etag = response.headers.get('ETag');
       setDocument(text, fileNameFor(url), null, keepView);
-      // setDocument cleared both, this is where the document came from and
-      // whether that place takes it back
+      // setDocument cleared these, this is where the document came from,
+      // whether that place takes it back, and what it looked like when read
       state.sourceUrl = url;
       state.writable = !!writable;
+      state.sourceEtag = etag;
       updateStatus();
       flash('loaded ' + url);
       return true;
@@ -1771,17 +1920,46 @@ body {
    * which keeps this a CORS simple request - there is no preflight for the
    * endpoint to answer, it only has to allow the origin on the response.
    */
+  /*
+   * The one request both the manual save and the autosave go through.
+   *
+   * If the source handed out an ETag when we read the document, it comes back
+   * as If-Match and the endpoint answers 409 when the file changed underneath
+   * - two tabs on one dot, or an edit on disk. Without that a save is a blind
+   * overwrite, which matters far more once saving happens on its own. A source
+   * that sends no ETag simply gets an unconditional write, as before.
+   */
+  async function sendToSource(text, keepalive) {
+    var headers = { 'Content-Type': 'text/plain;charset=utf-8' };
+    if (state.sourceEtag) headers['If-Match'] = state.sourceEtag;
+
+    var response = await fetch(state.sourceUrl, {
+      method: 'POST',
+      headers: headers,
+      body: text,
+      keepalive: !!keepalive
+    });
+
+    if (response.status === 409) {
+      var conflict = new Error('changed since it was opened');
+      conflict.conflict = true;
+      throw conflict;
+    }
+    if (!response.ok) throw new Error(response.status + ' ' + response.statusText);
+
+    state.sourceEtag = response.headers.get('ETag') || null;
+    return text;
+  }
+
   async function postToSource() {
     try {
-      var response = await fetch(state.sourceUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: editor.getValue()
-      });
-      if (!response.ok) throw new Error(response.status + ' ' + response.statusText);
-      markSaved();
+      var text = editor.getValue();
+      await sendToSource(text);
+      state.savedText = text;
+      setSaveState('saved', 'saved ' + clockTime());
       flash('saved to ' + state.sourceUrl);
     } catch (error) {
+      setSaveState(error.conflict ? 'stale' : 'failed', 'not saved: ' + error.message);
       flash('could not save to ' + state.sourceUrl + ': ' + error.message);
     }
   }
@@ -1912,6 +2090,11 @@ body {
       ? state.sourceUrl + (state.writable ? ' (Save posts back here)' : ' (read only)')
       : state.fileName;
 
+    // with saving invisible the status bar is the only place to learn whether
+    // the work is safe - and the only place the error guard can say it is
+    // holding a save back
+    elements.save.textContent = autosaves() ? saveLabel() : '';
+
     var dots = state.parsed.dots;
     var defaults = state.parsed.defaultTags.length;
     elements.dots.textContent = dots.length + (dots.length === 1 ? ' dot' : ' dots') +
@@ -1990,10 +2173,10 @@ body {
       if (!event.target.closest('[data-menu]')) closeMenus();
     });
 
-    // render shortcut hints for this platform
-    document.querySelectorAll('[data-shortcut]').forEach(function (hint) {
-      var key = hint.getAttribute('data-shortcut');
-      hint.textContent = isApple ? '⌘' + key : 'Ctrl+' + key;
+    // Escape dismisses an open menu. Not a command shortcut - the menu is the
+    // only way to reach a command now, so this just gets out of one
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape') closeMenus();
     });
   }
 
@@ -2009,12 +2192,7 @@ body {
       case 'file-save': saveFile(); break;
       case 'file-save-as': saveFileAs(); break;
 
-      // no menu item any more, these two are reached by their shortcut only
-      case 'edit-format': formatDocument(); break;
-      case 'view-zoom':
-        if (state.selected < 0) flash('put the cursor inside a dot first');
-        else dotMap.panToDot(state.selected, 15);
-        break;
+      case 'edit-copy': copyDot(); break;
 
       case 'view-fit':
         if (!dotMap.fitToDots()) flash('no dots with valid coordinates');
@@ -2034,24 +2212,14 @@ body {
     dotMap.invalidateSize();
   }
 
-  /* ------------------------------------------------------------ shortcuts */
+  /* --------------------------------------------------------- unload guard */
 
-  function setUpShortcuts() {
-    document.addEventListener('keydown', function (event) {
-      if (event.key === 'Escape') {
-        closeMenus();
-        return;
-      }
-      var modifier = isApple ? event.metaKey : event.ctrlKey;
-      if (!modifier || event.altKey) return;
-
-      var key = event.key.toLowerCase();
-      if (key === 's') { event.preventDefault(); saveFile(); }
-      else if (key === 'o') { event.preventDefault(); openFile(); }
-      else if (key === 'g') { event.preventDefault(); runAction('view-zoom'); }
-      else if (key === 'f' && event.shiftKey) { event.preventDefault(); formatDocument(); }
-    });
-
+  /*
+   * Nothing is persisted in the browser, so this prompt is the only thing
+   * between an unsaved document and a closed tab. There are no keyboard
+   * shortcuts any more, but this is not one - keep it wired.
+   */
+  function setUpUnloadGuard() {
     global.addEventListener('beforeunload', function (event) {
       if (!isModified()) return;
       event.preventDefault();
@@ -2064,6 +2232,7 @@ body {
   function boot() {
     elements = {
       file: byId('status-file'),
+      save: byId('status-save'),
       dots: byId('status-dots'),
       problems: byId('status-problems'),
       message: byId('status-message'),
@@ -2083,6 +2252,8 @@ body {
     editor.onChange = function () {
       debounce('parse', PARSE_DELAY, reparse);
       updateStatus();
+      // after the parse debounce, so the error guard reads a current parse
+      scheduleAutosave();
     };
 
     editor.onCursor = function () {
@@ -2121,10 +2292,7 @@ body {
 
     elements.coordinate.addEventListener('click', function () {
       var text = elements.coordinate.textContent.split('  ')[0];
-      if (!text || !global.navigator.clipboard) return;
-      global.navigator.clipboard.writeText(text).then(function () {
-        flash('copied ' + text);
-      });
+      if (text) copyToClipboard(text, text);
     });
 
     // dropping a .dot file anywhere opens it
@@ -2139,8 +2307,16 @@ body {
       });
     });
 
+    // leaving the text, hiding the tab or closing it all save now rather than
+    // waiting out the debounce. keepalive lets the last one outlive the page
+    editor.textarea.addEventListener('blur', function () { flushAutosave(false); });
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'hidden') flushAutosave(true);
+    });
+    global.addEventListener('pagehide', function () { flushAutosave(true); });
+
     setUpMenus();
-    setUpShortcuts();
+    setUpUnloadGuard();
 
     var parameters = readParameters();
     state.writable = parameters.writable;

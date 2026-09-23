@@ -9,7 +9,7 @@ and the file format come from
 [clj-geo](https://github.com/vanjakom/clj-geo).
 
 **Open it at <https://vanjakom.github.io/dote/>** — Options ▸ Open picks a `.dot`
-off your disk and ⌘S writes back to the same file. Nothing is uploaded and
+off your disk and Options ▸ Save writes back to the same file. Nothing is uploaded and
 nothing is stored in the browser.
 
 The whole app is one `index.html`. No build step, no dependencies to install;
@@ -59,25 +59,27 @@ Leaflet and map tiles are the only things fetched from the network.
 | `===` | separates public tags from private ones |
 | anything else | free text, the first one names the dot |
 
-## Keyboard and mouse
-
-`⌘` on macOS, `Ctrl` elsewhere.
+## Mouse
 
 | | |
 | --- | --- |
-| `⌘O` | open a file |
-| `⌘S` | save |
-| `⌘⇧F` | format the document (no menu item, shortcut only) |
-| `⌘G` | zoom the map to the dot at the cursor (no menu item, shortcut only) |
-| `Enter` | in a dot, start the next tag already indented |
-| `⇧Enter` | a plain newline, no indent |
-| `Tab` | insert the tag indent |
-| `Esc` | close a menu |
-| click a link | open it in a new tab |
-| `⌥`/`Alt` click a link | place the caret in it instead |
 | long press the map | add a dot there, cursor waiting on its first tag |
 | click a marker | select that dot in the text |
 | drag a marker | rewrite its coordinate line |
+| click a link | open it in a new tab |
+| `⌥`/`Alt` click a link | place the caret in it instead |
+| `Esc` | close an open menu |
+
+Inside the text pane, `Enter` within a dot starts the next tag already
+indented, `⇧Enter` gives a plain newline, and `Tab` inserts the tag indent.
+
+There are no command shortcuts — everything else is in the Options menu.
+
+**Options ▸ Copy dot** puts the dot at the cursor on the clipboard: its
+coordinate line, its own tags, and the file's `[tag:…]` defaults appended
+last. The defaults are included on purpose — they live in the file header, so
+a dot pasted into a file that lacks those directives would otherwise arrive
+without them.
 
 Moving the cursor into a different dot centres the map on it without changing
 the zoom. New dots are always added at the top of the file.
@@ -135,6 +137,35 @@ route names, so a repository can equally well be a directory of files on a
 static host.
 
 ## Saving
+
+Dots opened from the **Repository** menu save themselves: two seconds after
+you stop typing, and immediately when the text pane loses focus, the tab is
+hidden, or the page closes. Everything else — a file opened with the picker,
+or `?writable=` pointing at some other endpoint — saves only when you ask,
+through Options ▸ Save.
+
+The status bar says which state the document is in:
+
+| | |
+| --- | --- |
+| *(blank)* | nothing to save |
+| `unsaved` | edited, waiting for the pause |
+| `saving` | a write is in the air |
+| `saved 14:32` | written at that time |
+| `2 errors, not saved` | held back, see below |
+| `not saved: …` | the write failed, or the dot changed underneath |
+
+**Autosave is held back while the document has parse errors.** A half-typed
+coordinate like `20.` is an error, and without this a pause mid-edit would
+write a broken file over a good one. It clears itself: the fix is a
+keystroke, and that schedules the next attempt.
+
+If the dot changed on the far end since you opened it — a second tab, or an
+edit on disk — the save is refused rather than clobbering it, and autosave
+stops until you reopen the dot from the menu. This needs the endpoint to send
+an `ETag` on read and honour `If-Match` on write; one that doesn't simply
+gets unconditional writes, as before.
+
 
 Saving over the file you opened needs the File System Access API, which is
 available only on a page served over https (or `localhost`) in a Chromium
