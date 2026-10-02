@@ -339,17 +339,46 @@ The status bar (`#status-save`, `saveLabel`) is the whole trust surface:
 saving is invisible and there are no shortcuts, so it is the only place that
 can say a save is being held back.
 
-### Map view in the url
+### The url hash
 
-The map view is mirrored into the location hash as `#map=zoom/lat/lon` and
-restored on reload. A view in the hash wins over fitting the map to the dots,
-which is what the `keepView` argument of `setDocument` is for. `hashchange`
-is listened to as well, so pasting a hash moves the map.
+```
+#map=12/44.81241/20.46118&dotstore=ravni.stablo
+```
 
-That hash is **latitude first** — the one place in the project where
-longitude does not come first. It is the format openstreetmap.org,
-geojson.io and umap use, so a view pastes straight between them. Everything
-else stays longitude first.
+`&` separated, the way openstreetmap.org and umap do it, and either parameter
+may appear without the other. `readHash` returns a plain object of the pairs;
+`readView` and `readDotstore` interpret the two that mean something. Unknown
+parameters are ignored rather than rejected, so one can be added later without
+breaking old links.
+
+`map` is zoom/latitude/longitude and is mirrored on every `moveend`/`zoomend`
+(debounced 300ms). It is **latitude first** — the one place in the project
+where longitude does not come first — because that is the form that pastes
+between osm, geojson.io and umap.
+
+`dotstore` names a repository dot as `namespace.id`, and needs `?repository=`
+to resolve. Internally a dot is addressed `namespace:id` (DOT.md); `hashFor`
+and `readDotstore` are the only places the two spellings meet, so the
+conversion lives in exactly one pair of functions. `openRepositoryDot` writes
+the hash once a dot has loaded, which is what keeps the address bar following
+the Repository menu.
+
+Ordering matters in two places and both are easy to break:
+
+- **`boot` reads the hash into locals before anything else**, because
+  `setDocument` and `writeHash` both rewrite it.
+- **`openRepositoryDot` takes `keepView`.** Loading a dot ends in
+  `setDocument`, which fits the map to the dots unless told otherwise — so
+  without this an explicit `#map=` would be overridden by the dot that the
+  same url asked for. Boot and `applyHash` pass `!!view`; a click in the menu
+  passes nothing, because fitting to the dot is what you want there.
+- `boot` skips its own `writeHash()` when a `dotstore` is pending, otherwise
+  the parameter briefly disappears from the address bar before the load
+  finishes and puts it back.
+
+A view in the hash still wins over fitting the map to the dots, which is what
+`setDocument`'s `keepView` argument is for, and `hashchange` is listened to,
+so pasting either parameter takes effect.
 
 ## Conventions
 

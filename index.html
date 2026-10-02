@@ -1847,16 +1847,20 @@ body {
     return count;
   }
 
-  function openRepositoryDot(namespace, id) {
+  // keepView when the url already said where to look, otherwise the map fits
+  // itself to whatever the dot contains
+  function openRepositoryDot(namespace, id, keepView) {
     if (isModified() && !global.confirm('Discard unsaved changes?')) return;
     var name = namespace + ':' + id;
     // named only once it actually loaded, so a failed fetch does not leave the
     // menu claiming a dot is open
-    loadFromUrl(dotUrl(namespace, id), false, true).then(function (loaded) {
+    loadFromUrl(dotUrl(namespace, id), !!keepView, true).then(function (loaded) {
       if (!loaded) return;
       state.repositoryDot = name;
       markCurrentRepositoryDot();
       updateStatus();
+      // the url now names what is open, so it can be pasted or reloaded
+      writeHash();
     });
   }
 
@@ -2028,12 +2032,43 @@ body {
    * umap all use, so a view can be pasted straight from one to the other. The
    * rest of the app stays longitude first.
    */
-  var HASH_PATTERN = /^#map=(-?\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)$/;
+  /*
+   * The hash carries two things, & separated the way openstreetmap.org and
+   * umap do it, so either can be present without the other:
+   *
+   *   #map=12/44.81241/20.46118&dotstore=ravni.stablo
+   *
+   * map is zoom/latitude/longitude. Latitude first - the one place in this
+   * project where longitude does not come first - because that is the form
+   * that pastes between osm, geojson.io and umap.
+   *
+   * dotstore names a dot in the repository as namespace.id, and needs
+   * ?repository= to mean anything. Internally a dot is addressed
+   * namespace:id (DOT.md); the hash spells it with a dot, and the two forms
+   * are converted into each other here and nowhere else.
+   */
+  var MAP_PATTERN = /^(-?\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)$/;
   var hashIsOurs = false;      // the hash change we are about to hear is our own
   var canReplaceState = true;  // file:// forbids replaceState in some browsers
 
   function readHash() {
-    var match = HASH_PATTERN.exec(global.location.hash);
+    var parts = {};
+    var raw = global.location.hash.replace(/^#/, '');
+    if (!raw) return parts;
+    raw.split('&').forEach(function (piece) {
+      var equals = piece.indexOf('=');
+      if (equals <= 0) return;
+      try {
+        parts[piece.substring(0, equals)] = decodeURIComponent(piece.substring(equals + 1));
+      } catch (error) {
+        /* a malformed escape is simply not a parameter */
+      }
+    });
+    return parts;
+  }
+
+  function readView(parts) {
+    var match = MAP_PATTERN.exec(parts.map || '');
     if (!match) return null;
     var view = {
       zoom: Number(match[1]),
@@ -2045,10 +2080,26 @@ body {
     return view;
   }
 
+  // "ravni.stablo" -> {namespace: "ravni", id: "stablo"}, splitting on the
+  // first dot so an id may contain one
+  function readDotstore(parts) {
+    var name = parts.dotstore;
+    if (!name) return null;
+    var dot = name.indexOf('.');
+    if (dot <= 0 || dot === name.length - 1) return null;
+    return { namespace: name.substring(0, dot), id: name.substring(dot + 1) };
+  }
+
   function hashFor(view) {
-    return '#map=' + round(view.zoom, 2) + '/' +
+    var pieces = ['map=' + round(view.zoom, 2) + '/' +
       round(view.latitude, HASH_PRECISION).toFixed(HASH_PRECISION) + '/' +
-      round(view.longitude, HASH_PRECISION).toFixed(HASH_PRECISION);
+      round(view.longitude, HASH_PRECISION).toFixed(HASH_PRECISION)];
+    // only what is open from a repository can be named; a picker-opened file
+    // has no address to put in a url
+    if (state.repositoryDot) {
+      pieces.push('dotstore=' + encodeURIComponent(state.repositoryDot.replace(':', '.')));
+    }
+    return '#' + pieces.join('&');
   }
 
   function writeHash() {
@@ -2075,8 +2126,16 @@ body {
       hashIsOurs = false;
       return;
     }
-    var view = readHash();
+    var parts = readHash();
+    var view = readView(parts);
     if (view) dotMap.setView(view);
+
+    // a dotstore pasted into the address bar opens that dot
+    var target = readDotstore(parts);
+    if (target && state.repositoryBase &&
+        target.namespace + ':' + target.id !== state.repositoryDot) {
+      openRepositoryDot(target.namespace, target.id, !!view);
+    }
   }
 
   /* ----------------------------------------------------------- status bar */
@@ -2331,15 +2390,24 @@ body {
         });
     }
 
-    // a view in the url wins over fitting the map to the dots
-    var view = readHash();
+    // read before anything else can rewrite it. a view in the url wins over
+    // fitting the map to the dots
+    var hash = readHash();
+    var view = readView(hash);
+    var target = readDotstore(hash);
 
     // nothing is remembered between visits: either the url says what to open,
     // or the document starts empty
     if (parameters.url) {
       setDocument('', fileNameFor(parameters.url), null, true);
       loadFromUrl(parameters.url, !!view, parameters.writable);
+    } else if (target && state.repositoryBase) {
+      // the listing is not needed to fetch one dot, only the base url, so
+      // this runs alongside the menu loading rather than after it
+      setDocument('', target.id + '.dot', null, true);
+      openRepositoryDot(target.namespace, target.id, !!view);
     } else {
+      if (target) flash('dotstore=' + hash.dotstore + ' needs ?repository= to resolve');
       setDocument(TEMPLATE, 'untitled.dot', null, !!view);
     }
 
@@ -2353,7 +2421,9 @@ body {
     }
 
     if (view) dotMap.setView(view);
-    else writeHash();
+    // a pending dotstore writes the hash itself once it has loaded; writing
+    // it here would briefly drop dotstore from the address bar
+    else if (!target) writeHash();
     showCoordinate(null);
   }
 

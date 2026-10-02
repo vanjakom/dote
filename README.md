@@ -92,10 +92,24 @@ the zoom. New dots are always added at the top of the file.
 | `?writable=true` | Save posts the document back to that same url |
 | `?repository=…` | base url of a repository of dots, adds the Repository menu |
 | `#map=zoom/lat/lon` | where to look |
+| `#dotstore=namespace.id` | which dot of the repository to open |
 
-The `#map=` hash is latitude first — the one place in the project where
-longitude does not come first. It is the format openstreetmap.org, geojson.io
-and umap use, so a view pastes straight between them.
+Hash parameters are `&` separated, the way openstreetmap.org and umap do it,
+and either may appear without the other:
+
+```
+#map=12/44.81241/20.46118&dotstore=ravni.stablo
+```
+
+`#map=` is latitude first — the one place in the project where longitude does
+not come first. It is the format openstreetmap.org, geojson.io and umap use,
+so a view pastes straight between them.
+
+`#dotstore=` needs `?repository=` to resolve, and spells the dot
+`namespace.id` rather than the `namespace:id` used elsewhere. dote keeps it up
+to date: open a different dot from the Repository menu and the address bar
+follows, so the url is always worth copying or reloading. Pasting a changed
+`dotstore` into the address bar opens that dot.
 
 ```
 https://vanjakom.github.io/dote/?url=https://raw.githubusercontent.com/you/dots/main/camps.dot#map=12/44.81/20.46
