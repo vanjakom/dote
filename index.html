@@ -303,6 +303,12 @@ body {
     </div>
   </div>
 
+  <!-- only shown when ?tilecatalog= names one -->
+  <div class="menu" data-menu id="tile-menu" hidden>
+    <button class="menu__title" type="button">Tile</button>
+    <div class="menu__items menu__items--tall" id="tile-items"></div>
+  </div>
+
   <!-- only shown when ?repository= names one -->
   <div class="menu" data-menu id="repository-menu" hidden>
     <button class="menu__title" type="button">Repository</button>
@@ -1134,6 +1140,23 @@ body {
 
   var DEFAULT_CENTER = [44.8125, 20.4612];  // Beograd, latitude/longitude for Leaflet
   var DEFAULT_ZOOM = 12;
+  var OSM_ZOOM = 19;    // deepest zoom osm actually has tiles for
+  var DEEP_ZOOM = 22;   // how far to allow zooming when an overlay is present
+
+  /*
+   * ?tileurl= takes the base of an xyz tile source and the standard tail is
+   * appended, so a trek-mate layer is
+   *
+   *   tile=http://localhost:6070/tile/trek-mate/ravni-map
+   *     -> http://localhost:6070/tile/trek-mate/ravni-map/{z}/{x}/{y}.png
+   *
+   * A value that already contains {z} is taken as a complete template
+   * instead, for a server that orders or names its parts differently.
+   */
+  function tileTemplate(tile) {
+    if (tile.indexOf('{z}') >= 0) return tile;
+    return tile.replace(/\/+$/, '') + '/{z}/{x}/{y}.png';
+  }
 
   // marker flavour follows the most specific label the dot carries
   function markerKind(dot) {
@@ -1171,11 +1194,26 @@ body {
     this.map = L.map(element, { zoomControl: false, worldCopyJump: true })
       .setView(options.center || DEFAULT_CENTER, options.zoom || DEFAULT_ZOOM);
 
+    /*
+     * OSM is always the ground, and there is exactly one overlay slot above
+     * it - ?tileurl= fills it at startup, the Tile menu replaces what is in it.
+     * No layers control: the map deliberately carries no chrome.
+     *
+     * maxNativeZoom keeps OSM visible past the zoom it actually has tiles
+     * for, upscaling instead of going blank, because an overlay that renders
+     * deeper than 19 is the reason to have one at all.
+     */
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
+      maxZoom: options.deepZoom ? DEEP_ZOOM : OSM_ZOOM,
+      maxNativeZoom: OSM_ZOOM,
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
     }).addTo(this.map);
 
+    this.overlay = null;
+    if (options.tileUrl) this.setOverlay(tileTemplate(options.tileUrl));
+
+    // markers live in Leaflet's markerPane, which sits above tilePane, so they
+    // stay on top of both tile layers whatever order these were added in
     this.layer = L.layerGroup().addTo(this.map);
 
     this._bind();
@@ -1234,6 +1272,50 @@ body {
     if (this._pressTimer) global.clearTimeout(this._pressTimer);
     this._pressTimer = null;
     this._pressAt = null;
+  };
+
+  /*
+   * Fills or empties the single overlay slot. A layer out of a catalog brings
+   * its own limits with it:
+   *
+   *   minZoom         below it the layer is not drawn, which is right for a
+   *                   cadastral layer that only exists from z18
+   *   maxNativeZoom   its deepest real tile; past that it upscales rather
+   *                   than vanishing, same trick as OSM below 19
+   *   bounds          Leaflet then asks for no tiles outside them, so a small
+   *                   layer costs nothing when you are looking elsewhere
+   */
+  DotMap.prototype.setOverlay = function (template, limits) {
+    if (this.overlay) {
+      this.map.removeLayer(this.overlay);
+      this.overlay = null;
+    }
+    if (!template) return;
+
+    limits = limits || {};
+    var settings = { maxZoom: DEEP_ZOOM };
+    if (limits.minZoom != null) settings.minZoom = limits.minZoom;
+    if (limits.maxZoom != null) settings.maxNativeZoom = limits.maxZoom;
+    if (limits.bounds) settings.bounds = L.latLngBounds(limits.bounds);
+
+    this.overlay = L.tileLayer(template, settings).addTo(this.map);
+  };
+
+  DotMap.prototype.hasOverlay = function () {
+    return !!this.overlay;
+  };
+
+  // would anything of that layer be on screen right now?
+  DotMap.prototype.showsBounds = function (bounds) {
+    try {
+      return this.map.getBounds().intersects(L.latLngBounds(bounds));
+    } catch (error) {
+      return true;   // unreadable bounds are not a reason to warn
+    }
+  };
+
+  DotMap.prototype.zoom = function () {
+    return this.map.getZoom();
   };
 
   DotMap.prototype._emitView = function () {
@@ -1383,6 +1465,9 @@ body {
     writable: false,       // that url takes the document back on POST
     repositoryBase: null,  // ?repository=, the base url of the listing
     repositoryDot: null,   // "namespace:id" of the dot currently open
+    tileCatalogBase: null, // ?tilecatalog=, the url of the TileJSON array
+    tileCatalog: [],       // the entries it returned
+    tileName: null,        // name of the overlay showing, null for none
     sourceEtag: null,      // ETag the source gave us, sent back as If-Match
     saveState: 'clean',    // clean | saving | saved | held | failed | stale
     saveMessage: '',       // what the status bar says about it
@@ -1751,10 +1836,14 @@ body {
     var parameters = new URLSearchParams(global.location.search);
     var url = parameters.get('url');
     var repository = parameters.get('repository');
+    var tileUrl = parameters.get('tileurl');
+    var tileCatalog = parameters.get('tilecatalog');
     var writable = parameters.get('writable');
     return {
       url: url ? fetchableUrl(url.trim()) : null,
       repository: repository ? repository.trim() : null,
+      tileUrl: tileUrl ? tileUrl.trim() : null,
+      tileCatalog: tileCatalog ? tileCatalog.trim() : null,
       writable: writable === 'true' || writable === '1'
     };
   }
@@ -1780,6 +1869,138 @@ body {
       flash('could not load ' + url + ': ' + error.message);
       return false;
     }
+  }
+
+  /* -------------------------------------------------------- tile catalog */
+
+  /*
+   * ?tilecatalog=<url> fetches a TileJSON 3.0.0 array and fills the Tile menu
+   * from it. Each entry carries name, namespace, tiles, minzoom, maxzoom and
+   * bounds; handmap on port 7078 serves one.
+   *
+   * The tile templates come back root relative - "/handmap/tile/.../{z}/..."
+   * - and are resolved against the catalog url. Note they must *not* go
+   * through `new URL()`, which percent encodes the braces into %7Bz%7D and
+   * leaves Leaflet with a template it cannot substitute into.
+   */
+  function absoluteTileUrl(template, base) {
+    if (/^https?:\/\//.test(template)) return template;
+    if (template.charAt(0) === '/') return new URL(base).origin + template;
+    return base.replace(/[^/]*$/, '') + template;
+  }
+
+  async function loadTileCatalog() {
+    var url = state.tileCatalogBase;
+    try {
+      var response = await fetch(url, { headers: { Accept: 'application/json' } });
+      if (!response.ok) throw new Error(response.status + ' ' + response.statusText);
+      var catalog = await response.json();
+      if (!Array.isArray(catalog)) throw new Error('expected a TileJSON array');
+      return catalog.filter(function (entry) {
+        return entry && entry.name && entry.tiles && entry.tiles.length;
+      });
+    } catch (error) {
+      flash('could not read the tile catalog at ' + url + ': ' + error.message);
+      return null;
+    }
+  }
+
+  function buildTileMenu(catalog) {
+    var items = elements.tileItems;
+    items.textContent = '';
+
+    // first entry turns the overlay off, back to bare OSM
+    var none = document.createElement('button');
+    none.type = 'button';
+    none.textContent = 'None';
+    none.setAttribute('data-tile', '');
+    items.appendChild(none);
+
+    var namespaces = [];
+    catalog.forEach(function (entry) {
+      var namespace = entry.namespace || '';
+      if (namespaces.indexOf(namespace) < 0) namespaces.push(namespace);
+    });
+
+    namespaces.sort().forEach(function (namespace) {
+      if (namespace) {
+        var group = document.createElement('div');
+        group.className = 'menu__group';
+        group.textContent = namespace;
+        items.appendChild(group);
+      }
+      catalog
+        .filter(function (entry) { return (entry.namespace || '') === namespace; })
+        .sort(function (a, b) { return a.name < b.name ? -1 : 1; })
+        .forEach(function (entry) {
+          var button = document.createElement('button');
+          button.type = 'button';
+          // the name repeats the namespace, so only the tail is worth showing
+          button.textContent = entry.name.indexOf(namespace + '/') === 0
+            ? entry.name.substring(namespace.length + 1)
+            : entry.name;
+          button.setAttribute('data-tile', entry.name);
+          button.title = entry.name + '  z' + entry.minzoom + '-' + entry.maxzoom;
+          items.appendChild(button);
+        });
+    });
+
+    state.tileCatalog = catalog;
+    elements.tileMenu.hidden = catalog.length === 0;
+    return catalog.length;
+  }
+
+  /*
+   * A catalog layer can be far away or only exist deep in - ravni-katastar is
+   * z18 and a couple of hundred metres across - so selecting one that cannot
+   * be seen from here says so rather than looking broken.
+   */
+  function selectTile(name) {
+    if (!name) {
+      state.tileName = null;
+      dotMap.setOverlay(null);
+      markCurrentTile();
+      writeHash();
+      flash('tiles off');
+      return;
+    }
+
+    var entry = state.tileCatalog.filter(function (e) { return e.name === name; })[0];
+    if (!entry) {
+      flash('no tile layer named ' + name);
+      return;
+    }
+
+    state.tileName = name;
+    dotMap.setOverlay(absoluteTileUrl(entry.tiles[0], state.tileCatalogBase), {
+      minZoom: entry.minzoom,
+      maxZoom: entry.maxzoom,
+      bounds: entry.bounds
+    });
+    markCurrentTile();
+    // the url now names the layer, so it can be pasted or reloaded
+    writeHash();
+
+    if (entry.bounds && !dotMap.showsBounds(entry.bounds)) {
+      flash(entry.name + ' is not in view');
+    } else if (entry.minzoom != null && dotMap.zoom() < entry.minzoom) {
+      flash(entry.name + ' starts at zoom ' + entry.minzoom);
+    } else {
+      flash(entry.name);
+    }
+  }
+
+  /*
+   * Three states, not two. A catalog layer marks itself; nothing showing
+   * marks None; an overlay from ?tileurl= marks neither, because it has no
+   * entry in the menu and claiming None would be a lie.
+   */
+  function markCurrentTile() {
+    var current = state.tileName || (dotMap.hasOverlay() ? null : '');
+    elements.tileItems.querySelectorAll('[data-tile]').forEach(function (button) {
+      button.classList.toggle('is-current',
+        current !== null && button.getAttribute('data-tile') === current);
+    });
   }
 
   /* ---------------------------------------------------------- repository */
@@ -2090,6 +2311,16 @@ body {
     return { namespace: name.substring(0, dot), id: name.substring(dot + 1) };
   }
 
+  // a layer name out of the catalog, "trek-mate/ravni-map"
+  function readTile(parts) {
+    return parts.tile || null;
+  }
+
+  // keeps "/" readable, the way #map= keeps the slashes in its triple
+  function encodeHashValue(value) {
+    return encodeURIComponent(value).replace(/%2F/g, '/');
+  }
+
   function hashFor(view) {
     var pieces = ['map=' + round(view.zoom, 2) + '/' +
       round(view.latitude, HASH_PRECISION).toFixed(HASH_PRECISION) + '/' +
@@ -2097,7 +2328,10 @@ body {
     // only what is open from a repository can be named; a picker-opened file
     // has no address to put in a url
     if (state.repositoryDot) {
-      pieces.push('dotstore=' + encodeURIComponent(state.repositoryDot.replace(':', '.')));
+      pieces.push('dotstore=' + encodeHashValue(state.repositoryDot.replace(':', '.')));
+    }
+    if (state.tileName) {
+      pieces.push('tile=' + encodeHashValue(state.tileName));
     }
     return '#' + pieces.join('&');
   }
@@ -2135,6 +2369,12 @@ body {
     if (target && state.repositoryBase &&
         target.namespace + ':' + target.id !== state.repositoryDot) {
       openRepositoryDot(target.namespace, target.id, !!view);
+    }
+
+    // and a tile name selects that layer, once there is a catalog to find it
+    var tile = readTile(parts);
+    if (state.tileCatalog.length && (tile || null) !== state.tileName) {
+      selectTile(tile || '');
     }
   }
 
@@ -2229,6 +2469,13 @@ body {
         openRepositoryDot(dot.getAttribute('data-namespace'), dot.getAttribute('data-id'));
         return;
       }
+      // data-tile="" is the None entry, so test for the attribute not a value
+      var tile = event.target.closest('[data-tile]');
+      if (tile) {
+        closeMenus();
+        selectTile(tile.getAttribute('data-tile'));
+        return;
+      }
       if (!event.target.closest('[data-menu]')) closeMenus();
     });
 
@@ -2301,12 +2548,21 @@ body {
       editorPane: byId('editor-pane'),
       repositoryMenu: byId('repository-menu'),
       repositoryItems: byId('repository-items'),
+      tileMenu: byId('tile-menu'),
+      tileItems: byId('tile-items'),
       fileInput: byId('file-input')
     };
 
+    // read before the map is built, because ?tileurl= is a constructor option
+    var parameters = readParameters();
+
     editor = new global.DOTE.Editor({ textarea: byId('text') });
 
-    dotMap = new global.DOTE.DotMap(byId('map'));
+    dotMap = new global.DOTE.DotMap(byId('map'), {
+      tileUrl: parameters.tileUrl,
+      // either source of overlays is a reason to allow zooming past OSM's 19
+      deepZoom: !!(parameters.tileUrl || parameters.tileCatalog)
+    });
 
     editor.onChange = function () {
       debounce('parse', PARSE_DELAY, reparse);
@@ -2377,9 +2633,9 @@ body {
     setUpMenus();
     setUpUnloadGuard();
 
-    var parameters = readParameters();
     state.writable = parameters.writable;
     state.repositoryBase = parameters.repository;
+    state.tileCatalogBase = parameters.tileCatalog;
 
     // say up front that Save cannot write back, rather than letting it look
     // like it worked and leaving a copy in the downloads folder
@@ -2396,6 +2652,19 @@ body {
     var view = readView(hash);
     var target = readDotstore(hash);
 
+    /*
+     * ?tileurl= wins over the catalog at boot. It is an explicit layer the
+     * link asked for, so a #tile= carried along from wherever the link was
+     * copied does not get to override it - and is dropped from the url,
+     * because leaving it there would describe something that is not showing.
+     *
+     * Precedence applies only here. Once the Tile menu has been used the
+     * tileurl overlay is gone and #tile= is the truth again, which is why
+     * applyHash does not repeat this test.
+     */
+    var wantedTile = parameters.tileUrl ? null : readTile(hash);
+    var staleTile = !!(parameters.tileUrl && readTile(hash));
+
     // nothing is remembered between visits: either the url says what to open,
     // or the document starts empty
     if (parameters.url) {
@@ -2411,7 +2680,21 @@ body {
       setDocument(TEMPLATE, 'untitled.dot', null, !!view);
     }
 
-    // the menu appears only once the listing has actually answered
+    // each menu appears only once its catalog has actually answered
+    if (state.tileCatalogBase) {
+      loadTileCatalog().then(function (catalog) {
+        if (!catalog) return;   // loadTileCatalog already said why
+        var count = buildTileMenu(catalog);
+        // a #tile= from the url can only be resolved now that the catalog is
+        // here, which is why it waits rather than being applied at boot
+        if (wantedTile) selectTile(wantedTile);
+        else markCurrentTile();
+        if (!wantedTile) {
+          flash(count + (count === 1 ? ' tile layer' : ' tile layers') + ' available');
+        }
+      });
+    }
+
     if (state.repositoryBase) {
       loadRepository().then(function (repository) {
         if (!repository) return;   // loadRepository already said why
@@ -2421,9 +2704,15 @@ body {
     }
 
     if (view) dotMap.setView(view);
-    // a pending dotstore writes the hash itself once it has loaded; writing
-    // it here would briefly drop dotstore from the address bar
-    else if (!target) writeHash();
+
+    /*
+     * A pending dotstore or tile writes the hash itself once it has resolved,
+     * so writing here would briefly drop that parameter from the address bar.
+     * A stale tile is the opposite case: ?tileurl= took precedence, nothing
+     * is going to write the hash on its behalf, and the #tile= has to go.
+     */
+    if (staleTile) writeHash();
+    else if (!view && !target && !wantedTile) writeHash();
     showCoordinate(null);
   }
 

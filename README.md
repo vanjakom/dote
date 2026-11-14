@@ -91,8 +91,64 @@ the zoom. New dots are always added at the top of the file.
 | `?url=…` | fetch the document from there at start, instead of opening an empty one |
 | `?writable=true` | Save posts the document back to that same url |
 | `?repository=…` | base url of a repository of dots, adds the Repository menu |
+| `?tileurl=…` | base url of an extra tile layer, drawn over OpenStreetMap |
+| `?tilecatalog=…` | url of a TileJSON catalog, adds the Tile menu |
 | `#map=zoom/lat/lon` | where to look |
 | `#dotstore=namespace.id` | which dot of the repository to open |
+| `#tile=namespace/layer` | which catalog tile layer is active |
+
+`?tileurl=` names the base of an XYZ tile source and dote appends
+`/{z}/{x}/{y}.png`:
+
+```
+?tileurl=http://localhost:6070/tile/trek-mate/ravni-map
+   -> http://localhost:6070/tile/trek-mate/ravni-map/{z}/{x}/{y}.png
+```
+
+A value that already contains `{z}` is used as a complete template instead,
+for a server that orders or names its parts differently. The layer is drawn
+straight over OpenStreetMap with no layers control — passing the parameter is
+the switch — and markers stay above both. While a tile layer is present the
+map zooms to 22 rather than 19, with OSM upscaling past the zoom it has tiles
+for instead of going blank.
+
+Tiles load through `<img>`, which is not subject to CORS, so a tile server on
+another port needs no headers for this to work.
+
+`?tilecatalog=` points at a TileJSON 3.0.0 array and fills a **Tile** menu
+from it, between Options and Repository, so layers can be switched while
+editing:
+
+```
+?tilecatalog=http://localhost:7078/handmap/repository
+```
+
+The menu lists `None` first, then the layers grouped by namespace, with the
+one showing marked. There is one overlay slot: `?tileurl=` fills it at startup
+and the menu replaces what is in it.
+
+The choice is kept in the hash as `#tile=`, so switching layers updates the
+address bar and a reload comes back on the same one.
+
+**`?tileurl=` takes precedence at load.** With both parameters you get the
+`?tileurl=` layer, and a `#tile=` carried along in the link is dropped from
+the url rather than left describing something that is not showing. Selecting
+from the Tile menu then replaces that layer and writes `#tile=` as usual — so
+copying the url and opening it afresh shows the `?tileurl=` layer again. The
+precedence applies only at load; once the menu has been used, `#tile=` is the
+truth.
+
+While a `?tileurl=` layer is showing the Tile menu marks nothing as current —
+not even `None` — because that layer has no entry in it. It names a layer from
+the catalog — `#tile=trek-mate/ravni-map` — distinct from `?tileurl=`,
+whose value is a tile url rather than a layer name. Query parameters
+configure; hash parameters record where you are.
+
+Each layer brings its own limits. `minzoom` keeps it undrawn below the zoom
+it exists at, `maxzoom` makes it upscale past its deepest real tile rather
+than vanish, and `bounds` stops Leaflet asking for tiles outside it. Picking
+a layer that cannot be seen from where you are says so — `is not in view`, or
+`starts at zoom 18` — rather than appearing to do nothing.
 
 Hash parameters are `&` separated, the way openstreetmap.org and umap do it,
 and either may appear without the other:

@@ -339,6 +339,112 @@ The status bar (`#status-save`, `saveLabel`) is the whole trust surface:
 saving is invisible and there are no shortcuts, so it is the only place that
 can say a save is being held back.
 
+### Extra tile layers
+
+`?tileurl=<base>` adds one XYZ layer over OSM. `tileTemplate` appends
+`/{z}/{x}/{y}.png` unless the value already contains `{z}`, in which case it
+is taken as a complete template.
+
+**The base must name the layer in full.** trek-mate serves
+`/tile/:type/:name/:zoom/:x/:y`, so for `ravni` the name is `ravni-map` and
+the parameter is `…/tile/trek-mate/ravni-map`. dote deliberately does *not*
+append `-map` — that is trek-mate's layer naming, and baking it in would make
+`?tileurl=` useless for every other source. Measured 2026-10-13: the bare
+`…/ravni/{z}/{x}/{y}.png` answers 404, `…/ravni-map/…` answers 200 image/png.
+
+No layers control: the map carries no chrome by decision, so the parameter
+being present is the switch. Markers are unaffected — Leaflet's `markerPane`
+sits above `tilePane`, so they stay on top of both tile layers whatever order
+they were added in.
+
+With a tile layer present the map's max zoom becomes 22 instead of 19, and
+OSM gets `maxNativeZoom: 19` so it upscales rather than going blank past the
+zoom it has tiles for — an overlay that renders deeper than OSM is the reason
+to pass one. Without `?tileurl=` nothing about the map changes.
+
+Tiles are fetched by Leaflet as `<img>`, which is not subject to CORS, so a
+tile server on another port needs no headers. This is why `?tileurl=` works
+against `localhost:6070` while `?url=` against another origin would not.
+
+`readParameters()` is called at the *top* of `boot`, before the map is
+constructed, because `tileUrl` is a `DotMap` constructor option rather than
+something applied afterwards.
+
+**`?tilecatalog=<url>` fetches a TileJSON 3.0.0 array and fills the Tile
+menu** (between Options and Repository) from it. `handmap` on port 7078
+serves one at `/handmap/repository`; as of 2026-11-11 it lists five
+`trek-mate` layers carrying `name`, `namespace`, `tiles`, `minzoom`,
+`maxzoom` and `bounds`.
+
+**`?tileurl=` takes precedence over `#tile=` at boot**, decided 2026-11-12.
+`boot` computes two things from that:
+
+```js
+var wantedTile = parameters.tileUrl ? null : readTile(hash);
+var staleTile  = !!(parameters.tileUrl && readTile(hash));
+```
+
+`wantedTile` is what the catalog callback will select, so a `?tileurl=`
+suppresses it. `staleTile` means a `#tile=` was present but overridden, and
+it is the one case where `boot` *must* write the hash — nothing else is going
+to do it on that parameter's behalf, and leaving it there would name a layer
+that is not showing. Every other pending-parameter case deliberately skips
+`writeHash()` to avoid dropping something mid-resolution.
+
+The precedence is **boot only**. `applyHash` does not repeat the test,
+because once the menu has been used the tileurl overlay is gone and `#tile=`
+is the truth again. Consequence, and it is the intended one: copy the url
+after switching layers, open it fresh, and you are back on the `?tileurl=`
+layer with the `#tile=` cleared.
+
+`markCurrentTile` therefore has **three** states, not two: a catalog layer
+marks itself, no overlay marks `None`, and an overlay from `?tileurl=` marks
+neither — it has no entry in the menu, so highlighting `None` would be false.
+That is what `DotMap.hasOverlay()` is for.
+
+**There is one overlay slot, not a stack.** `?tileurl=` fills it at startup and
+the menu's `setOverlay` replaces what is in it; the `None` entry empties it.
+That is why both features go through `DotMap.setOverlay` rather than each
+adding a layer of its own.
+
+Three things about the catalog that are easy to get wrong:
+
+- **Do not resolve a tile template with `new URL()`.** The templates come
+  back root relative (`/handmap/tile/.../{z}/{x}/{y}.png`) and `new URL()`
+  percent encodes the braces into `%7Bz%7D`, leaving Leaflet a template it
+  cannot substitute into. `absoluteTileUrl` prefixes the origin by hand for
+  exactly that reason.
+- **`bounds` are Leaflet-ordered** `[[southLat, westLon], [northLat,
+  eastLon]]`, not the TileJSON spec's flat `[west, south, east, north]`. They
+  go straight into `L.latLngBounds`.
+- **An entry's `maxzoom` becomes `maxNativeZoom`, not `maxZoom`** — the same
+  reasoning as OSM's 19, so the layer upscales past its deepest real tile
+  instead of disappearing. `minzoom` *does* become `minZoom`, because a
+  cadastral layer genuinely should not draw below the zoom it exists at.
+
+`selectTile` warns when a layer cannot be seen from the current view
+(`showsBounds`) or starts deeper than the current zoom. Two of the five
+layers are z18+ and a few hundred metres across, so without that, choosing
+one looks like nothing happening.
+
+The choice **is** mirrored into the url as `#tile=<name>`, written by
+`selectTile` on both branches (selecting and `None`), so a reload comes back
+on the same layer.
+
+`?tileurl=` and `#tile=` are deliberately named apart — it was `?tile=`
+until 2026-11-12 and the collision was confusing. The query parameter's value
+is a tile **url**, the hash parameter's is a layer **name** from the catalog,
+which follows the split the rest of the url already uses: query parameters
+configure, hash parameters record where you are.
+
+`#tile=` can only be resolved once the catalog has answered, so `boot` holds
+it in `wantedTile` and applies it in the `loadTileCatalog` callback rather
+than inline — and `boot` skips its own `writeHash()` when either a `dotstore`
+or a `tile` is pending, for the same reason: writing the hash early drops the
+not-yet-resolved parameter out of the address bar. `encodeHashValue` leaves
+`/` unescaped so a layer name stays readable, the way `#map=` keeps the
+slashes in its triple.
+
 ### The url hash
 
 ```
